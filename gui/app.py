@@ -1,30 +1,48 @@
-from tkinter import filedialog
-import customtkinter as ctk
+import os
+import sys
 import keyboard
 import pyperclip
+from tkinter import filedialog
+import customtkinter as ctk
+
+def get_resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_path, relative_path)
 
 class KahootParserApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Kahoot reincarnation Parser")
+        
+        self.title("Kahoot Reincarnation Parser")
         self.geometry("950x800")
-        self.iconbitmap("icon.ico")
         self.configure(fg_color="#1A1A1A")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
+        icon_path = get_resource_path("icon.ico")
+        try:
+            self.iconbitmap(icon_path)
+        except Exception as e:
+            print(f"Icon not detecktet: {e}")
+
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(3, weight=1)
 
         self.controller = None
         self.result_widgets = []
 
+
         self.font_title = ctk.CTkFont(family="Segoe UI", size=28, weight="bold")
         self.font_main = ctk.CTkFont(family="Segoe UI", size=15)
         self.font_bold = ctk.CTkFont(family="Segoe UI", size=15, weight="bold")
         self.font_question = ctk.CTkFont(family="Segoe UI", size=17, weight="bold")
 
-        self.header_label = ctk.CTkLabel(self, text="Kahoot reincarnation Parser", font=self.font_title, text_color="#FFFFFF")
+
+        self.header_label = ctk.CTkLabel(self, text="Kahoot Reincarnation Parser", font=self.font_title, text_color="#FFFFFF")
         self.header_label.grid(row=0, column=0, padx=20, pady=(30, 10), sticky="w")
+
 
         self.search_frame = ctk.CTkFrame(self, fg_color="#2A2D34", corner_radius=12)
         self.search_frame.grid(row=1, column=0, padx=20, pady=(0, 20), sticky="ew")
@@ -68,12 +86,14 @@ class KahootParserApp(ctk.CTk):
         )
         self.export_button.grid(row=0, column=2, padx=(0, 15), pady=15)
 
+
         self.status_label = ctk.CTkLabel(self, text="Ready. Press F9 to search from clipboard.", font=self.font_main, text_color="#A0AEC0")
         self.status_label.grid(row=2, column=0, padx=25, pady=(0, 10), sticky="w")
 
         self.results_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.results_frame.grid(row=3, column=0, padx=20, pady=(0, 20), sticky="nsew")
         self.results_frame.grid_columnconfigure(0, weight=1)
+
 
         keyboard.add_hotkey('F9', self._on_hotkey_press)
 
