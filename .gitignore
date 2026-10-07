@@ -1,0 +1,12 @@
+#Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+#WSL
+venv/
+env/
+
+#Windows
+Thumbs.db
+Desktop.ini
