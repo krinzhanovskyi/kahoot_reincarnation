@@ -21,7 +21,7 @@ class KahootController:
         self.view.after(0, self.view.display_search_results, quizzes)
 
     def handle_fetch(self, uuid):
-        self.view.show_loading("Fetching and parsing JSON...")
+        self.view.show_loading("Fetching and parsing JSON..w.")
         threading.Thread(target=self._fetch_worker, args=(uuid,), daemon=True).start()
 
     def _fetch_worker(self, uuid):

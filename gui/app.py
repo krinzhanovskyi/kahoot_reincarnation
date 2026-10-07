@@ -6,7 +6,8 @@ import pyperclip
 class KahootParserApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Kahoot API Parser")
+        self.iconbitmap("icon.ico")
+        self.title("Kahoot reincarnation Parcer")
         self.geometry("950x800")
         self.configure(fg_color="#1A1A1A")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -22,7 +23,7 @@ class KahootParserApp(ctk.CTk):
         self.font_bold = ctk.CTkFont(family="Segoe UI", size=15, weight="bold")
         self.font_question = ctk.CTkFont(family="Segoe UI", size=17, weight="bold")
 
-        self.header_label = ctk.CTkLabel(self, text="Kahoot Public Parser", font=self.font_title, text_color="#FFFFFF")
+        self.header_label = ctk.CTkLabel(self, text="Kahoot reincarnation Parcer", font=self.font_title, text_color="#FFFFFF")
         self.header_label.grid(row=0, column=0, padx=20, pady=(30, 10), sticky="w")
 
         self.search_frame = ctk.CTkFrame(self, fg_color="#2A2D34", corner_radius=12)
