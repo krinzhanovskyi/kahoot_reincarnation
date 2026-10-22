@@ -257,9 +257,8 @@ class ControllerErrorTests(unittest.TestCase):
             getattr(controller, method)(value)
         return thread.call_args.kwargs["args"]
 
-    def deliver(self, view):
-        _, callback, *args = view.after.call_args.args
-        callback(*args)
+    def deliver(self, controller):
+        controller.process_pending_results()
 
     def test_worker_errors_schedule_message_and_log_traceback(self):
         for entry, worker, dependency in [
@@ -276,7 +275,7 @@ class ControllerErrorTests(unittest.TestCase):
                             getattr(controller, worker)(*args)
                     self.assertTrue(controller.is_busy)
                     view.show_message.assert_not_called()
-                    self.deliver(view)
+                    self.deliver(controller)
                     self.assertFalse(controller.is_busy)
                     message, color = view.show_message.call_args.args
                     self.assertEqual(color, "#EF4444")
@@ -291,7 +290,7 @@ class ControllerErrorTests(unittest.TestCase):
         args = self.begin(controller)
         with patch("core.controller.search_quizzes", return_value=[]):
             controller._search_worker(*args)
-        self.deliver(view)
+        self.deliver(controller)
         view.display_search_results.assert_called_once_with([])
         self.assertFalse(controller.is_busy)
 
@@ -342,8 +341,7 @@ class ControllerRequestTests(unittest.TestCase):
         self.assertEqual(self.controller.current_quiz_data, [])
         self.controller.handle_search("blocked")
         self.thread.assert_called_once()
-        _, callback, *result_args = self.view.after.call_args.args
-        callback(*result_args)
+        self.controller.process_pending_results()
         self.assertFalse(self.controller.is_busy)
         self.assertEqual(self.controller.current_quiz_data, data)
         self.view.display_quiz_answers.assert_called_once_with(data)
@@ -398,6 +396,218 @@ class ControllerRequestTests(unittest.TestCase):
         copy.assert_not_called()
         opened.assert_not_called()
         self.view.show_message.assert_not_called()
+
+
+class ShutdownTests(unittest.TestCase):
+    def test_queued_results_are_discarded_on_close(self):
+        view = Mock()
+        controller = KahootController(view)
+        with patch("core.controller.threading.Thread"):
+            controller.handle_fetch("abc")
+        controller._publish_result(1, "fetch", [{"question": "old"}])
+        view.reset_mock()
+        controller.close()
+        controller.close()
+        controller.process_pending_results()
+        self.assertEqual(view.mock_calls, [])
+        self.assertFalse(controller.is_busy)
+        self.assertEqual(controller.current_quiz_data, [])
+        self.assertTrue(controller._results.empty())
+
+    def test_late_worker_success_and_failure_never_touch_view(self):
+        import threading
+        for failure in (False, True):
+            with self.subTest(failure=failure):
+                view = Mock()
+                controller = KahootController(view)
+                started, release = threading.Event(), threading.Event()
+                def fetch(_):
+                    started.set()
+                    if not release.wait(2):
+                        raise RuntimeError("Test did not release worker")
+                    if failure:
+                        raise KahootAPIError("Late timeout")
+                    return [{"question": "Late", "answers": ["A"]}]
+                with patch("core.controller.get_quiz_answers", side_effect=fetch), patch("core.controller.logger"):
+                    worker = threading.Thread(target=controller._fetch_worker, args=(1, "abc"))
+                    worker.start()
+                    try:
+                        self.assertTrue(started.wait(2))
+                        controller.close()
+                    finally:
+                        release.set()
+                        worker.join(2)
+                self.assertFalse(worker.is_alive())
+                controller.process_pending_results()
+                self.assertEqual(view.mock_calls, [])
+                self.assertTrue(controller._results.empty())
+
+    def test_actions_after_close_are_ignored(self):
+        view = Mock()
+        controller = KahootController(view)
+        controller.close()
+        with patch("core.controller.threading.Thread") as thread, patch("core.controller.pyperclip.copy") as copy:
+            controller.handle_search("abc")
+            controller.handle_fetch("abc")
+            controller.handle_copy("A")
+            controller.handle_export("unused.json")
+            controller._finish_request(1, "error", "late")
+            controller._publish_result(1, "fetch", [])
+        thread.assert_not_called()
+        copy.assert_not_called()
+        self.assertEqual(view.mock_calls, [])
+
+    def test_worker_results_only_render_when_main_thread_drains_queue(self):
+        import threading
+        owner = threading.get_ident()
+        view = Mock()
+        view.display_search_results.side_effect = lambda _: self.assertEqual(threading.get_ident(), owner)
+        controller = KahootController(view)
+        with patch("core.controller.threading.Thread"):
+            controller.handle_search("abc")
+        with patch("core.controller.search_quizzes", return_value=[]):
+            worker = threading.Thread(target=controller._search_worker, args=(1, "abc"))
+            worker.start()
+            worker.join(2)
+        self.assertFalse(worker.is_alive())
+        view.after.assert_not_called()
+        view.display_search_results.assert_not_called()
+        controller.process_pending_results()
+        view.display_search_results.assert_called_once_with([])
+
+    def fake_app(self):
+        import threading
+        from types import SimpleNamespace
+        app = SimpleNamespace(
+            _closing=False, _hotkey_pending=threading.Event(), _poll_id="timer-1",
+            _hotkey_handle="hotkey-1", controller=Mock(), after_cancel=Mock(),
+            after=Mock(return_value="timer-2"), destroy=Mock(),
+            _poll_events=Mock(), _process_clipboard_search=Mock(),
+        )
+        app.controller.is_busy = False
+        return app
+
+    def test_hotkey_callback_only_sets_event_and_ignores_close_and_busy(self):
+        from gui.app import KahootParserApp
+        app = self.fake_app()
+        KahootParserApp._on_hotkey_press(app)
+        self.assertTrue(app._hotkey_pending.is_set())
+        app.after.assert_not_called()
+        app._process_clipboard_search.assert_not_called()
+        for closing, busy in ((True, False), (False, True)):
+            app._closing, app.controller.is_busy = closing, busy
+            app._hotkey_pending.clear()
+            KahootParserApp._on_hotkey_press(app)
+            self.assertFalse(app._hotkey_pending.is_set())
+
+    def test_gui_close_cancels_timer_removes_own_hotkey_and_is_idempotent(self):
+        from gui.app import KahootParserApp
+        app = self.fake_app()
+        with patch("gui.app.keyboard.remove_hotkey") as remove:
+            KahootParserApp.on_closing(app)
+            KahootParserApp.on_closing(app)
+        app.controller.close.assert_called_once()
+        app.after_cancel.assert_called_once_with("timer-1")
+        remove.assert_called_once_with("hotkey-1")
+        app.destroy.assert_called_once()
+        KahootParserApp._poll_events(app)
+        app.after.assert_not_called()
+        app.controller.process_pending_results.assert_not_called()
+
+    def test_hotkey_cleanup_failure_does_not_prevent_window_destruction(self):
+        from gui.app import KahootParserApp
+        app = self.fake_app()
+        with patch("gui.app.keyboard.remove_hotkey", side_effect=RuntimeError("hook failed")):
+            with self.assertLogs("gui.app", level="ERROR"):
+                KahootParserApp.on_closing(app)
+        app.destroy.assert_called_once()
+
+    def test_poll_handles_results_and_hotkey_on_gui_side(self):
+        from gui.app import KahootParserApp
+        app = self.fake_app()
+        app._hotkey_pending.set()
+        KahootParserApp._poll_events(app)
+        app.controller.process_pending_results.assert_called_once()
+        app._process_clipboard_search.assert_called_once()
+        self.assertFalse(app._hotkey_pending.is_set())
+        app.after.assert_called_once_with(50, app._poll_events)
+        self.assertEqual(app._poll_id, "timer-2")
+
+
+class ClipboardTests(unittest.TestCase):
+    def fake_app(self):
+        from types import SimpleNamespace
+        controller = Mock()
+        controller.is_busy = False
+        return SimpleNamespace(
+            _closing=False, controller=controller, _hotkey_handle=None,
+            _on_hotkey_press=Mock(), show_message=Mock(), search_entry=Mock(),
+            deiconify=Mock(), attributes=Mock(), focus_force=Mock(), _on_search_clicked=Mock(),
+        )
+
+    def test_hotkey_registration_failure_keeps_manual_search_available(self):
+        from gui.app import KahootParserApp
+        app = self.fake_app()
+        with patch("gui.app.keyboard.add_hotkey", side_effect=OSError("denied")):
+            with self.assertLogs("gui.app", level="ERROR"):
+                KahootParserApp._register_hotkey(app)
+        self.assertIsNone(app._hotkey_handle)
+        self.assertIn("Search", app.show_message.call_args.args[0])
+        app.search_entry.get.return_value = "bike"
+        KahootParserApp._on_search_clicked(app)
+        app.controller.handle_search.assert_called_once_with("bike")
+
+    def test_hotkey_registration_success_retains_cleanup_handle(self):
+        from gui.app import KahootParserApp
+        app = self.fake_app()
+        with patch("gui.app.keyboard.add_hotkey", return_value="handle") as add:
+            KahootParserApp._register_hotkey(app)
+        self.assertEqual(app._hotkey_handle, "handle")
+        add.assert_called_once_with("F9", app._on_hotkey_press)
+        app.show_message.assert_not_called()
+
+    def test_clipboard_read_failure_does_not_start_search_or_modify_entry(self):
+        import pyperclip
+        from gui.app import KahootParserApp
+        app = self.fake_app()
+        with patch("gui.app.pyperclip.paste", side_effect=pyperclip.PyperclipException("busy")):
+            with self.assertLogs("gui.app", level="ERROR"):
+                KahootParserApp._process_clipboard_search(app)
+        app.search_entry.delete.assert_not_called()
+        app._on_search_clicked.assert_not_called()
+        self.assertIn("Could not read", app.show_message.call_args.args[0])
+
+    def test_empty_and_non_text_clipboard_do_not_start_search(self):
+        from gui.app import KahootParserApp
+        for content in ("", "   ", None, b"bytes"):
+            with self.subTest(content=content):
+                app = self.fake_app()
+                with patch("gui.app.pyperclip.paste", return_value=content):
+                    KahootParserApp._process_clipboard_search(app)
+                app.show_message.assert_called_once()
+                app._on_search_clicked.assert_not_called()
+
+    def test_clipboard_read_recovers_on_next_attempt(self):
+        from gui.app import KahootParserApp
+        app = self.fake_app()
+        with patch("gui.app.pyperclip.paste", side_effect=[OSError("busy"), "  bike  "]):
+            with self.assertLogs("gui.app", level="ERROR"):
+                KahootParserApp._process_clipboard_search(app)
+            KahootParserApp._process_clipboard_search(app)
+        app.search_entry.insert.assert_called_once_with(0, "bike")
+        app._on_search_clicked.assert_called_once()
+
+    def test_copy_failure_never_reports_success_and_can_retry(self):
+        import pyperclip
+        view = Mock()
+        controller = KahootController(view)
+        with patch("core.controller.pyperclip.copy", side_effect=[pyperclip.PyperclipException("busy"), None]):
+            with self.assertLogs("core.controller", level="ERROR"):
+                controller.handle_copy("A")
+            self.assertIn("Could not copy", view.show_message.call_args.args[0])
+            self.assertFalse(controller.is_busy)
+            controller.handle_copy("A")
+        self.assertIn("copied", view.show_message.call_args.args[0])
 
 
 if __name__ == "__main__":

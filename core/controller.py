@@ -91,6 +91,7 @@ class KahootController:
             self._finish_request(*result)
 
     def close(self):
+        """Invalidate work without waiting for the network; call on GUI thread."""
         with self._result_lock:
             self._closed.set()
             self._active_request_id = None
@@ -116,7 +117,12 @@ class KahootController:
     def handle_copy(self, text):
         if self._closed.is_set() or self.is_busy:
             return
-        pyperclip.copy(text)
+        try:
+            pyperclip.copy(text)
+        except Exception:
+            logger.exception("Could not write to clipboard")
+            self.view.show_message("Could not copy the answer. Please try again.", "#EF4444")
+            return
         self.view.show_message("Answer copied to clipboard!", "#3B82F6")
 
     def handle_export(self, file_path):

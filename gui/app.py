@@ -101,8 +101,16 @@ class KahootParserApp(ctk.CTk):
         self.results_frame.grid_columnconfigure(0, weight=1)
 
 
-        self._hotkey_handle = keyboard.add_hotkey('F9', self._on_hotkey_press)
+        self._register_hotkey()
         self._poll_id = self.after(50, self._poll_events)
+
+    def _register_hotkey(self):
+        try:
+            self._hotkey_handle = keyboard.add_hotkey('F9', self._on_hotkey_press)
+        except Exception:
+            logging.getLogger(__name__).exception("Could not register F9")
+            self._hotkey_handle = None
+            self.show_message("F9 is unavailable. Enter a query and use Search instead.", "#D97706")
 
     def set_controller(self, controller):
         self.controller = controller
@@ -117,7 +125,7 @@ class KahootParserApp(ctk.CTk):
             try:
                 self.after_cancel(self._poll_id)
             except TclError:
-                pass
+                pass  # Callback may already have been cancelled.
             self._poll_id = None
         if self._hotkey_handle is not None:
             try:
@@ -129,6 +137,7 @@ class KahootParserApp(ctk.CTk):
         self.destroy()
 
     def _on_hotkey_press(self):
+        # keyboard invokes this on its own thread: no Tk calls here.
         if not self._closing and self.controller is not None and not self.controller.is_busy:
             self._hotkey_pending.set()
 
@@ -149,7 +158,16 @@ class KahootParserApp(ctk.CTk):
     def _process_clipboard_search(self):
         if self._closing or self.controller is None or self.controller.is_busy:
             return
-        query = pyperclip.paste().strip()
+        try:
+            clipboard_text = pyperclip.paste()
+        except Exception:
+            logging.getLogger(__name__).exception("Could not read clipboard")
+            self.show_message("Could not read the clipboard. Try again or enter a query manually.", "#EF4444")
+            return
+        if not isinstance(clipboard_text, str):
+            self.show_message("Clipboard does not contain text.", "#EF4444")
+            return
+        query = clipboard_text.strip()
         if not query:
             self.show_message("Clipboard is empty.", "#EF4444")
             return
