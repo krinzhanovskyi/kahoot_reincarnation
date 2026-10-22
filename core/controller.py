@@ -13,51 +13,85 @@ class KahootController:
     def __init__(self, view):
         self.view = view
         self.current_quiz_data = []
+        self._request_counter = 0
+        self._active_request_id = None
+
+    @property
+    def is_busy(self):
+        return self._active_request_id is not None
 
     def handle_search(self, query):
+        if self.is_busy:
+            return
+        query = query.strip()
         if not query:
             self.view.show_message("Please enter a search query.", "#EF4444")
             return
-        self.view.show_loading("Searching API...")
-        threading.Thread(target=self._search_worker, args=(query,), daemon=True).start()
+        self._start_request(self._search_worker, query, "Searching API...")
 
-    def _search_worker(self, query):
+    def handle_fetch(self, uuid):
+        if self.is_busy:
+            return
+        self._start_request(self._fetch_worker, uuid, "Fetching and parsing JSON...")
+
+    def _start_request(self, worker, value, message):
+        # Entry points and completion callbacks run on the GUI thread.
+        self._request_counter += 1
+        request_id = self._request_counter
+        self._active_request_id = request_id
+        self.current_quiz_data = []
+        self.view.show_loading(message)
+        try:
+            threading.Thread(target=worker, args=(request_id, value), daemon=True).start()
+        except Exception as exc:
+            self._finish_request(request_id, "error", self._error_message(exc))
+
+    def _search_worker(self, request_id, query):
         try:
             quizzes = search_quizzes(query)
         except Exception as exc:
-            self._report_worker_error(exc)
+            self._report_worker_error(request_id, exc)
             return
-        self.view.after(0, self.view.display_search_results, quizzes)
+        self.view.after(0, self._finish_request, request_id, "search", quizzes)
 
-    def handle_fetch(self, uuid):
-        self.current_quiz_data = []
-        self.view.show_loading("Fetching and parsing JSON...")
-        threading.Thread(target=self._fetch_worker, args=(uuid,), daemon=True).start()
-
-    def _fetch_worker(self, uuid):
+    def _fetch_worker(self, request_id, uuid):
         try:
             answers_data = get_quiz_answers(uuid)
         except Exception as exc:
-            self._report_worker_error(exc)
+            self._report_worker_error(request_id, exc)
             return
-        self.current_quiz_data = answers_data
-        self.view.after(0, self.view.display_quiz_answers, answers_data)
+        self.view.after(0, self._finish_request, request_id, "fetch", answers_data)
 
-    def _report_worker_error(self, exc):
-        # This boundary catches unexpected bugs too, so loading can finish.
+    def _error_message(self, exc):
         logger.exception("Kahoot operation failed")
         if isinstance(exc, KahootAPIError):
-            message = str(exc)
+            return str(exc)
+        return "Unexpected error while processing quiz data. Check the console log."
+
+    def _report_worker_error(self, request_id, exc):
+        self.view.after(0, self._finish_request, request_id, "error", self._error_message(exc))
+
+    def _finish_request(self, request_id, kind, result):
+        # A delayed or duplicate callback must not change a newer request.
+        if request_id != self._active_request_id:
+            return
+        self._active_request_id = None
+        if kind == "error":
+            self.view.show_message(result, "#EF4444")
+        elif kind == "search":
+            self.view.display_search_results(result)
         else:
-            message = "Unexpected error while processing quiz data. Check the console log."
-        self.view.after(0, self.view.show_message, message, "#EF4444")
+            self.current_quiz_data = result
+            self.view.display_quiz_answers(result)
 
     def handle_copy(self, text):
+        if self.is_busy:
+            return
         pyperclip.copy(text)
         self.view.show_message("Answer copied to clipboard!", "#3B82F6")
 
     def handle_export(self, file_path):
-        if not self.current_quiz_data or not file_path:
+        if self.is_busy or not self.current_quiz_data or not file_path:
             return
         try:
             with open(file_path, "w", encoding="utf-8") as f:

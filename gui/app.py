@@ -109,6 +109,8 @@ class KahootParserApp(ctk.CTk):
         self.after(0, self._process_clipboard_search)
 
     def _process_clipboard_search(self):
+        if self.controller is None or self.controller.is_busy:
+            return
         query = pyperclip.paste().strip()
         if not query:
             self.show_message("Clipboard is empty.", "#EF4444")
@@ -146,11 +148,13 @@ class KahootParserApp(ctk.CTk):
         self.clear_results()
         self.status_label.configure(text=message, text_color="#FFFFFF")
         self.search_button.configure(state="disabled")
-        self.update()
+        self.search_entry.configure(state="disabled")
 
     def show_message(self, message, color):
         self.status_label.configure(text=message, text_color=color)
-        self.search_button.configure(state="normal")
+        state = "disabled" if self.controller and self.controller.is_busy else "normal"
+        self.search_button.configure(state=state)
+        self.search_entry.configure(state=state)
 
     def display_search_results(self, quizzes):
         self.search_button.configure(state="normal")
