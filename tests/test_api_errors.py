@@ -1,5 +1,3 @@
-"""Run from the project root: python -m unittest discover -s tests -v."""
-
 import unittest
 from unittest.mock import Mock, patch
 
@@ -81,6 +79,94 @@ class APIErrorTests(unittest.TestCase):
                 with patch("api.client.requests.get", side_effect=requests.ReadTimeout):
                     with self.assertRaises(KahootAPIError):
                         function("abc")
+
+
+class DataValidationTests(unittest.TestCase):
+    def test_invalid_root_and_list_fields_raise_readable_errors(self):
+        for function, target, key in [
+            (search_quizzes, "api.search.get_json", "entities"),
+            (get_quiz_answers, "api.fetch.get_json", "questions"),
+        ]:
+            for payload in (None, [], "text", 42, {}, {key: None}, {key: {}}, {key: "bad"}):
+                with self.subTest(function=function.__name__, payload=payload):
+                    with patch(target, return_value=payload):
+                        with self.assertRaisesRegex(KahootAPIError, "format"):
+                            function("abc")
+
+    def test_empty_lists_are_successful(self):
+        with patch("api.search.get_json", return_value={"entities": []}):
+            self.assertEqual(search_quizzes("abc"), [])
+        with patch("api.fetch.get_json", return_value={"questions": []}):
+            self.assertEqual(get_quiz_answers("abc"), [])
+
+    def test_mixed_search_results_keep_valid_records_and_fallback_shapes(self):
+        payload = {"entities": [None, 42, {"uuid": []}, {"uuid": "   "},
+            {"kahoot": None, "card": {"uuid": " a ", "title": None}},
+            {"kahoot": {}, "card": {"uuid": "b", "title": "Bike"}},
+            {"uuid": "c", "title": {"bad": "value"}},
+        ]}
+        with patch("api.search.get_json", return_value=payload), self.assertLogs("api.search", level="WARNING"):
+            self.assertEqual(search_quizzes("abc"), [
+                {"uuid": "a", "title": "Untitled"},
+                {"uuid": "b", "title": "Bike"},
+                {"uuid": "c", "title": "Untitled"},
+            ])
+
+    def test_all_invalid_search_results_are_not_reported_as_no_matches(self):
+        with patch("api.search.get_json", return_value={"entities": [None, {}]}):
+            with self.assertLogs("api.search", level="WARNING"):
+                with self.assertRaisesRegex(KahootAPIError, "identifier"):
+                    search_quizzes("abc")
+
+    def test_broken_questions_preserve_positions_and_valid_neighbors(self):
+        valid = {"question": "Good", "choices": [{"answer": "A", "correct": True}]}
+        payload = {"questions": [valid, None, {"question": "Bad", "choices": None}, valid]}
+        with patch("api.fetch.get_json", return_value=payload), self.assertLogs("api.fetch", level="WARNING"):
+            result = get_quiz_answers("abc")
+        self.assertEqual(len(result), 4)
+        self.assertEqual(result[0], {"question": "Good", "answers": ["A"]})
+        self.assertEqual(result[3], result[0])
+        for index in (1, 2):
+            self.assertEqual(result[index]["answers"], [])
+            self.assertIn("warning", result[index])
+
+    def test_invalid_choices_do_not_produce_partial_or_invented_answers(self):
+        for bad in (None, [], "text", {}, {"correct": 1, "answer": "B"},
+                    {"correct": "true", "answer": "B"}, {"correct": True, "answer": None},
+                    {"correct": True, "answer": ["B"]}, {"correct": True, "answer": " "}):
+            with self.subTest(choice=bad):
+                payload = {"questions": [{"question": "Q", "choices": [
+                    {"correct": True, "answer": "A"}, bad]}]}
+                with patch("api.fetch.get_json", return_value=payload), self.assertLogs("api.fetch", level="WARNING"):
+                    result = get_quiz_answers("abc")
+                self.assertEqual(result[0]["answers"], [])
+                self.assertIn("warning", result[0])
+
+    def test_non_list_choices_and_non_string_questions_are_safe(self):
+        for choices in (None, {}, "text", 4):
+            with self.subTest(choices=choices):
+                with patch("api.fetch.get_json", return_value={"questions": [{"question": [], "choices": choices}]}):
+                    with self.assertLogs("api.fetch", level="WARNING"):
+                        result = get_quiz_answers("abc")
+                self.assertIsInstance(result[0]["question"], str)
+                self.assertEqual(result[0]["answers"], [])
+                self.assertIn("warning", result[0])
+
+    def test_warnings_survive_json_export(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        view = Mock()
+        controller = KahootController(view)
+        with patch("api.fetch.get_json", return_value={"questions": [None]}):
+            with self.assertLogs("api.fetch", level="WARNING"):
+                controller.current_quiz_data = get_quiz_answers("abc")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "quiz.json"
+            controller.handle_export(path)
+            exported = json.loads(path.read_text(encoding="utf-8"))
+        self.assertIn("warning", exported[0])
+        self.assertEqual(exported[0]["answers"], [])
 
 
 class ControllerErrorTests(unittest.TestCase):
