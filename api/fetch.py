@@ -1,9 +1,9 @@
 import requests
-from api.config import QUIZ_URL, HEADERS
+from api.config import QUIZ_URL, HEADERS, REQUEST_TIMEOUT
 
 def get_quiz_answers(uuid):
     try:
-        response = requests.get(f"{QUIZ_URL}{uuid}", headers=HEADERS)
+        response = requests.get(f"{QUIZ_URL}{uuid}", headers=HEADERS, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         data = response.json()
         questions_data = []

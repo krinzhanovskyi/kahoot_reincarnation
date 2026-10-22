@@ -3,3 +3,5 @@ HEADERS = {
 }
 SEARCH_URL = "https://create.kahoot.it/rest/kahoots/"
 QUIZ_URL = "https://play.kahoot.it/rest/kahoots/"
+
+REQUEST_TIMEOUT = (5, 15)
