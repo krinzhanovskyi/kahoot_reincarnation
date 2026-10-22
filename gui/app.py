@@ -189,7 +189,14 @@ class KahootParserApp(ctk.CTk):
             return
 
         self.export_button.configure(state="normal")
-        self.show_message(f"Extracted {len(answers_data)} questions. Click an answer to copy it.", "#10B981")
+        warning_count = sum(bool(item.get("warning")) for item in answers_data)
+        if warning_count:
+            self.show_message(
+                f"Loaded {len(answers_data)} questions. {warning_count} have data warnings.",
+                "#D97706",
+            )
+        else:
+            self.show_message(f"Extracted {len(answers_data)} questions. Click an answer to copy it.", "#10B981")
 
         for index, item in enumerate(answers_data):
             card = ctk.CTkFrame(self.results_frame, fg_color="#2A2D34", corner_radius=12)
@@ -207,11 +214,21 @@ class KahootParserApp(ctk.CTk):
             )
             q_label.grid(row=0, column=0, padx=20, pady=(20, 5), sticky="w")
 
-            answers_text = "  |  ".join(item['answers']) if item['answers'] else "No correct answer specified"
+            if item.get("warning"):
+                warning_label = ctk.CTkLabel(
+                    card, text=item["warning"], font=self.font_main,
+                    text_color="#FBBF24", wraplength=800, justify="left",
+                )
+                warning_label.grid(row=1, column=0, padx=20, pady=5, sticky="w")
+
+            has_answers = bool(item["answers"])
+            answers_text = "  |  ".join(item["answers"])
+            empty_text = "Answers unavailable" if item.get("warning") else "No correct answer specified"
             
             a_btn = ctk.CTkButton(
                 card,
-                text=f"Copy Answer: {answers_text}",
+                text=f"Copy Answer: {answers_text}" if has_answers else empty_text,
+                state="normal" if has_answers else "disabled",
                 font=self.font_bold,
                 height=35,
                 corner_radius=6,
@@ -221,4 +238,4 @@ class KahootParserApp(ctk.CTk):
                 anchor="w",
                 command=lambda a=answers_text: self.controller.handle_copy(a) if self.controller else None
             )
-            a_btn.grid(row=1, column=0, padx=20, pady=(10, 20), sticky="w")
+            a_btn.grid(row=2, column=0, padx=20, pady=(10, 20), sticky="w")
