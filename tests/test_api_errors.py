@@ -1,3 +1,5 @@
+"""Run from the project root: python -m unittest discover -s tests -v."""
+
 import unittest
 from unittest.mock import Mock, patch
 
@@ -5,7 +7,7 @@ import requests
 
 from api.client import KahootAPIError, get_json
 from api.config import REQUEST_TIMEOUT
-from api.fetch import get_quiz_answers
+from api.fetch import get_quiz_answers, parse_question
 from api.search import search_quizzes
 from core.controller import KahootController
 
@@ -71,7 +73,10 @@ class APIErrorTests(unittest.TestCase):
                 {"answer": "C", "correct": True},
             ]}
         ]})):
-            self.assertEqual(get_quiz_answers("abc"), [{"question": "Q", "answers": ["A", "C"]}])
+            result = get_quiz_answers("abc")
+            self.assertEqual(result[0]["question"], "Q")
+            self.assertEqual(result[0]["answers"], ["A", "C"])
+            self.assertEqual(result[0]["status"], "supported")
 
     def test_errors_propagate_from_both_api_functions(self):
         for function in (search_quizzes, get_quiz_answers):
@@ -124,7 +129,8 @@ class DataValidationTests(unittest.TestCase):
         with patch("api.fetch.get_json", return_value=payload), self.assertLogs("api.fetch", level="WARNING"):
             result = get_quiz_answers("abc")
         self.assertEqual(len(result), 4)
-        self.assertEqual(result[0], {"question": "Good", "answers": ["A"]})
+        self.assertEqual(result[0]["question"], "Good")
+        self.assertEqual(result[0]["answers"], ["A"])
         self.assertEqual(result[3], result[0])
         for index in (1, 2):
             self.assertEqual(result[index]["answers"], [])
@@ -167,6 +173,82 @@ class DataValidationTests(unittest.TestCase):
             exported = json.loads(path.read_text(encoding="utf-8"))
         self.assertIn("warning", exported[0])
         self.assertEqual(exported[0]["answers"], [])
+
+
+class QuestionTypeTests(unittest.TestCase):
+    def test_choice_types_extract_only_explicit_correct_answers(self):
+        for kind in ("quiz", "true_false"):
+            with self.subTest(kind=kind):
+                item = parse_question({"type": kind, "question": "Q", "choices": [
+                    {"answer": "True", "correct": True}, {"answer": "False", "correct": False}]})
+                self.assertEqual(item["answers"], ["True"])
+                self.assertEqual(item["status"], "supported")
+                self.assertNotIn("warning", item)
+
+    def test_opinion_types_do_not_extract_even_if_choices_claim_correctness(self):
+        for kind in ("survey", "poll", "word_cloud", "brainstorm", "scale", "nps"):
+            with self.subTest(kind=kind):
+                item = parse_question({"type": kind, "question": "Your opinion?", "choices": [
+                    {"answer": "A", "correct": True}]})
+                self.assertEqual(item["answers"], [])
+                self.assertEqual(item["status"], "no_answer_required")
+                self.assertNotIn("warning", item)
+
+    def test_slides_without_question_or_choices_are_not_corrupt(self):
+        for kind in ("content", "slide"):
+            with self.subTest(kind=kind):
+                item = parse_question({"type": kind, "title": "Introduction"})
+                self.assertEqual(item["question"], "Introduction")
+                self.assertEqual(item["status"], "content")
+                self.assertEqual(item["answers"], [])
+                self.assertNotIn("warning", item)
+
+    def test_special_and_unknown_types_never_guess_answers(self):
+        for kind in ("jumble", "puzzle", "open_ended", "type_answer", "slider", "pin_it", "future_type"):
+            with self.subTest(kind=kind):
+                item = parse_question({"type": kind, "question": "Q", "choices": [
+                    {"answer": "A", "correct": True}]})
+                self.assertEqual(item["status"], "unsupported")
+                self.assertEqual(item["type"], kind)
+                self.assertEqual(item["answers"], [])
+                self.assertNotIn("warning", item)
+
+    def test_media_answers_do_not_return_partial_text_answers(self):
+        item = parse_question({"type": "quiz", "question": "Q", "choices": [
+            {"answer": "A", "correct": True}, {"image": "image-id", "correct": True}]})
+        self.assertEqual(item["status"], "unsupported")
+        self.assertEqual(item["answers"], [])
+        self.assertIn("media", item["message"])
+
+    def test_missing_and_invalid_type_are_distinct(self):
+        question = {"question": "Q", "choices": [{"answer": "A", "correct": True}]}
+        item = parse_question(question)
+        self.assertEqual(item["type"], "unspecified")
+        self.assertEqual(item["answers"], ["A"])
+        for kind in (None, [], {}, 42, " "):
+            with self.subTest(kind=kind):
+                item = parse_question(dict(question, type=kind))
+                self.assertEqual(item["status"], "invalid_data")
+                self.assertEqual(item["answers"], [])
+                self.assertIn("warning", item)
+
+    def test_no_correct_flags_is_distinct_from_an_opinion_question(self):
+        item = parse_question({"type": "quiz", "question": "Q", "choices": [
+            {"answer": "A", "correct": False}]})
+        self.assertEqual(item["status"], "no_correct_answer")
+        self.assertEqual(item["answers"], [])
+
+    def test_mixed_quiz_preserves_order_and_export_metadata(self):
+        import json
+        payload = {"questions": [{"type": "content"}, {"type": "poll", "question": "Opinion?"},
+            {"type": "jumble", "question": "Order?"}, None,
+            {"type": "quiz", "question": "Q", "choices": [{"answer": "A", "correct": True}]}]}
+        with patch("api.fetch.get_json", return_value=payload), self.assertLogs("api.fetch", level="WARNING"):
+            result = get_quiz_answers("abc")
+        exported = json.loads(json.dumps(result))
+        self.assertEqual([item["status"] for item in exported],
+                         ["content", "no_answer_required", "unsupported", "invalid_data", "supported"])
+        self.assertEqual(exported[-1]["answers"], ["A"])
 
 
 class ControllerErrorTests(unittest.TestCase):
