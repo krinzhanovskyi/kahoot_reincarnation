@@ -1,8 +1,10 @@
+import logging
+import threading
 import os
 import sys
 import keyboard
 import pyperclip
-from tkinter import filedialog
+from tkinter import TclError, filedialog
 import customtkinter as ctk
 
 def get_resource_path(relative_path):
@@ -30,6 +32,10 @@ class KahootParserApp(ctk.CTk):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(3, weight=1)
 
+        self._closing = False
+        self._hotkey_pending = threading.Event()
+        self._poll_id = None
+        self._hotkey_handle = None
         self.controller = None
         self.result_widgets = []
 
@@ -95,21 +101,53 @@ class KahootParserApp(ctk.CTk):
         self.results_frame.grid_columnconfigure(0, weight=1)
 
 
-        keyboard.add_hotkey('F9', self._on_hotkey_press)
+        self._hotkey_handle = keyboard.add_hotkey('F9', self._on_hotkey_press)
+        self._poll_id = self.after(50, self._poll_events)
 
     def set_controller(self, controller):
         self.controller = controller
 
     def on_closing(self):
-        keyboard.unhook_all()
-        self.quit()
+        if self._closing:
+            return
+        self._closing = True
+        if self.controller is not None:
+            self.controller.close()
+        if self._poll_id is not None:
+            try:
+                self.after_cancel(self._poll_id)
+            except TclError:
+                pass
+            self._poll_id = None
+        if self._hotkey_handle is not None:
+            try:
+                keyboard.remove_hotkey(self._hotkey_handle)
+            except Exception:
+                logging.getLogger(__name__).exception("Could not unregister F9")
+            self._hotkey_handle = None
+        self._hotkey_pending.clear()
         self.destroy()
 
     def _on_hotkey_press(self):
-        self.after(0, self._process_clipboard_search)
+        if not self._closing and self.controller is not None and not self.controller.is_busy:
+            self._hotkey_pending.set()
+
+    def _poll_events(self):
+        self._poll_id = None
+        if self._closing:
+            return
+        try:
+            if self.controller is not None:
+                self.controller.process_pending_results()
+            if self._hotkey_pending.is_set():
+                self._hotkey_pending.clear()
+                self._process_clipboard_search()
+        finally:
+            if not self._closing:
+                self._poll_id = self.after(50, self._poll_events)
 
     def _process_clipboard_search(self):
-        if self.controller is None or self.controller.is_busy:
+        if self._closing or self.controller is None or self.controller.is_busy:
             return
         query = pyperclip.paste().strip()
         if not query:
@@ -190,13 +228,12 @@ class KahootParserApp(ctk.CTk):
 
         self.export_button.configure(state="normal")
         warning_count = sum(bool(item.get("warning")) for item in answers_data)
-        if warning_count:
-            self.show_message(
-                f"Loaded {len(answers_data)} questions. {warning_count} have data warnings.",
-                "#D97706",
-            )
-        else:
-            self.show_message(f"Extracted {len(answers_data)} questions. Click an answer to copy it.", "#10B981")
+        unsupported_count = sum(item.get("status") == "unsupported" for item in answers_data)
+        self.show_message(
+            f"Loaded {len(answers_data)} items. "
+            f"Unsupported: {unsupported_count}. Data warnings: {warning_count}.",
+            "#D97706" if warning_count or unsupported_count else "#10B981",
+        )
 
         for index, item in enumerate(answers_data):
             card = ctk.CTkFrame(self.results_frame, fg_color="#2A2D34", corner_radius=12)
@@ -206,7 +243,7 @@ class KahootParserApp(ctk.CTk):
 
             q_label = ctk.CTkLabel(
                 card,
-                text=f"Q{index + 1}: {item['question']}",
+                text=f"{index + 1}. [{item.get('type', 'unknown')}] {item['question']}",
                 font=self.font_question,
                 text_color="#FFFFFF",
                 wraplength=800,
@@ -214,16 +251,22 @@ class KahootParserApp(ctk.CTk):
             )
             q_label.grid(row=0, column=0, padx=20, pady=(20, 5), sticky="w")
 
-            if item.get("warning"):
+            details = "\n".join(filter(None, (item.get("message"), item.get("warning"))))
+            if details:
                 warning_label = ctk.CTkLabel(
-                    card, text=item["warning"], font=self.font_main,
-                    text_color="#FBBF24", wraplength=800, justify="left",
+                    card, text=details, font=self.font_main,
+                    text_color="#FBBF24" if item.get("warning") else "#A0AEC0",
+                    wraplength=800, justify="left",
                 )
                 warning_label.grid(row=1, column=0, padx=20, pady=5, sticky="w")
 
             has_answers = bool(item["answers"])
             answers_text = "  |  ".join(item["answers"])
-            empty_text = "Answers unavailable" if item.get("warning") else "No correct answer specified"
+            empty_text = {
+                "content": "Content slide", "no_answer_required": "No correct answer required",
+                "unsupported": "Unsupported format", "invalid_data": "Answers unavailable",
+                "no_correct_answer": "No correct answer specified",
+            }.get(item.get("status"), "Answers unavailable")
             
             a_btn = ctk.CTkButton(
                 card,

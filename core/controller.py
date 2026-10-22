@@ -1,6 +1,7 @@
 import logging
 import threading
 import json
+from queue import Empty, Queue
 import pyperclip
 from api.client import KahootAPIError
 from api.search import search_quizzes
@@ -15,13 +16,16 @@ class KahootController:
         self.current_quiz_data = []
         self._request_counter = 0
         self._active_request_id = None
+        self._closed = threading.Event()
+        self._result_lock = threading.Lock()
+        self._results = Queue()
 
     @property
     def is_busy(self):
         return self._active_request_id is not None
 
     def handle_search(self, query):
-        if self.is_busy:
+        if self._closed.is_set() or self.is_busy:
             return
         query = query.strip()
         if not query:
@@ -30,12 +34,11 @@ class KahootController:
         self._start_request(self._search_worker, query, "Searching API...")
 
     def handle_fetch(self, uuid):
-        if self.is_busy:
+        if self._closed.is_set() or self.is_busy:
             return
         self._start_request(self._fetch_worker, uuid, "Fetching and parsing JSON...")
 
     def _start_request(self, worker, value, message):
-        # Entry points and completion callbacks run on the GUI thread.
         self._request_counter += 1
         request_id = self._request_counter
         self._active_request_id = request_id
@@ -52,7 +55,7 @@ class KahootController:
         except Exception as exc:
             self._report_worker_error(request_id, exc)
             return
-        self.view.after(0, self._finish_request, request_id, "search", quizzes)
+        self._publish_result(request_id, "search", quizzes)
 
     def _fetch_worker(self, request_id, uuid):
         try:
@@ -60,7 +63,7 @@ class KahootController:
         except Exception as exc:
             self._report_worker_error(request_id, exc)
             return
-        self.view.after(0, self._finish_request, request_id, "fetch", answers_data)
+        self._publish_result(request_id, "fetch", answers_data)
 
     def _error_message(self, exc):
         logger.exception("Kahoot operation failed")
@@ -69,11 +72,37 @@ class KahootController:
         return "Unexpected error while processing quiz data. Check the console log."
 
     def _report_worker_error(self, request_id, exc):
-        self.view.after(0, self._finish_request, request_id, "error", self._error_message(exc))
+        self._publish_result(request_id, "error", self._error_message(exc))
+
+    def _publish_result(self, request_id, kind, result):
+        with self._result_lock:
+            if not self._closed.is_set():
+                self._results.put((request_id, kind, result))
+
+    def process_pending_results(self):
+        """Called exclusively by the GUI thread's polling callback."""
+        if self._closed.is_set():
+            return
+        while True:
+            try:
+                result = self._results.get_nowait()
+            except Empty:
+                return
+            self._finish_request(*result)
+
+    def close(self):
+        with self._result_lock:
+            self._closed.set()
+            self._active_request_id = None
+            self.current_quiz_data = []
+            while True:
+                try:
+                    self._results.get_nowait()
+                except Empty:
+                    break
 
     def _finish_request(self, request_id, kind, result):
-        # A delayed or duplicate callback must not change a newer request.
-        if request_id != self._active_request_id:
+        if self._closed.is_set() or request_id != self._active_request_id:
             return
         self._active_request_id = None
         if kind == "error":
@@ -85,13 +114,13 @@ class KahootController:
             self.view.display_quiz_answers(result)
 
     def handle_copy(self, text):
-        if self.is_busy:
+        if self._closed.is_set() or self.is_busy:
             return
         pyperclip.copy(text)
         self.view.show_message("Answer copied to clipboard!", "#3B82F6")
 
     def handle_export(self, file_path):
-        if self.is_busy or not self.current_quiz_data or not file_path:
+        if self._closed.is_set() or self.is_busy or not self.current_quiz_data or not file_path:
             return
         try:
             with open(file_path, "w", encoding="utf-8") as f:
