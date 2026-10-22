@@ -1,3 +1,4 @@
+import logging
 import sys
 import customtkinter as ctk
 from gui.app import KahootParserApp
@@ -12,6 +13,10 @@ def quiet_interrupt_handler(exctype, value, traceback):
 sys.excepthook = quiet_interrupt_handler
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     ctk.set_appearance_mode("Dark")
     
     app = KahootParserApp()

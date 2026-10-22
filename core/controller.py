@@ -1,8 +1,13 @@
+import logging
 import threading
 import json
 import pyperclip
+from api.client import KahootAPIError
 from api.search import search_quizzes
 from api.fetch import get_quiz_answers
+
+logger = logging.getLogger(__name__)
+
 
 class KahootController:
     def __init__(self, view):
@@ -17,17 +22,35 @@ class KahootController:
         threading.Thread(target=self._search_worker, args=(query,), daemon=True).start()
 
     def _search_worker(self, query):
-        quizzes = search_quizzes(query)
+        try:
+            quizzes = search_quizzes(query)
+        except Exception as exc:
+            self._report_worker_error(exc)
+            return
         self.view.after(0, self.view.display_search_results, quizzes)
 
     def handle_fetch(self, uuid):
-        self.view.show_loading("Fetching and parsing JSON..w.")
+        self.current_quiz_data = []
+        self.view.show_loading("Fetching and parsing JSON...")
         threading.Thread(target=self._fetch_worker, args=(uuid,), daemon=True).start()
 
     def _fetch_worker(self, uuid):
-        answers_data = get_quiz_answers(uuid)
+        try:
+            answers_data = get_quiz_answers(uuid)
+        except Exception as exc:
+            self._report_worker_error(exc)
+            return
         self.current_quiz_data = answers_data
         self.view.after(0, self.view.display_quiz_answers, answers_data)
+
+    def _report_worker_error(self, exc):
+        # This boundary catches unexpected bugs too, so loading can finish.
+        logger.exception("Kahoot operation failed")
+        if isinstance(exc, KahootAPIError):
+            message = str(exc)
+        else:
+            message = "Unexpected error while processing quiz data. Check the console log."
+        self.view.after(0, self.view.show_message, message, "#EF4444")
 
     def handle_copy(self, text):
         pyperclip.copy(text)

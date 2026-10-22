@@ -156,7 +156,7 @@ class KahootParserApp(ctk.CTk):
         self.search_button.configure(state="normal")
         
         if not quizzes:
-            self.show_message("No public quizzes found or API is restricting access.", "#EF4444")
+            self.show_message("No public quizzes found for this query.", "#EF4444")
             return
 
         self.show_message(f"Found {len(quizzes)} quizzes. Select one to extract answers.", "#10B981")
@@ -181,7 +181,7 @@ class KahootParserApp(ctk.CTk):
         self.search_button.configure(state="normal")
         
         if not answers_data:
-            self.show_message("Failed to parse quiz data. The quiz might be private.", "#EF4444")
+            self.show_message("No questions were returned for this quiz.", "#EF4444")
             return
 
         self.export_button.configure(state="normal")
