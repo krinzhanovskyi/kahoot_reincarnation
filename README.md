@@ -1,77 +1,136 @@
-# Kahoot reincarnation Parcer 1.0
+# Kahoot Reincarnation Parser
 
-A desktop Python application designed to search and parse public Kahoot quizzes. It enables users to locate quizzes by title, instantly retrieve correct answers, copy them to the clipboard with a single click.
+A simple desktop Python application for searching public Kahoot quizzes and viewing their questions and correct answers.
 
-This app was created as a project for a personal portfolio and not allowed use for cheating.
+This project was created for a Software Development course to practice Python, working with APIs, and building graphical user interfaces.
 
-## Key Features
+## Features
 
-- **Intelligent Search:** Query public quizzes via the open Kahoot API using the quiz title or question text.
-- **Global Hotkey Integration (F9):** Operates as a background process. Pressing `F9` brings the application to the foreground, reads the system clipboard, and automatically initiates a search query.
-- **Clipboard Management:** Copy correct answers to the system clipboard via a single UI interaction.
-- **Modern Interface:** Card-based UI and dark mode built on the `customtkinter` framework.
+- Search for public Kahoot quizzes using a quiz title or question text.
+- View questions and available correct answers.
+- Copy an answer to the clipboard with one click.
+- Press **F9** to bring the app to the front and search using text from the clipboard.
+- Use a dark-themed interface built with CustomTkinter.
+- Export quiz questions and answers to a JSON file.
 
-## Technology Stack
+## Technologies Used
 
-- **Language:** Python 3.x
-- **GUI:** `customtkinter`
-- **Networking:** `requests`
-- **System Integration:** `keyboard`, `pyperclip`
+- **Python 3** — programming language
+- **CustomTkinter** — graphical user interface
+- **Requests** — HTTP requests to retrieve quiz data
+- **keyboard** — global F9 shortcut
+- **pyperclip** — clipboard support
+- **JSON** — exporting quiz data
 
 ## Project Structure
 
-```Text
+```text
 kahoot_reincarnation/
-├── api/                   # Kahoot API communication module
+├── api/
 │   ├── __init__.py
-│   ├── config.py          # Headers and endpoint URL configuration
-│   ├── fetch.py           # JSON retrieval and parsing for specific quizzes
-│   └── search.py          # Search queries via the Discover catalog
-├── core/                  # Application business logic
+│   ├── client.py         # HTTP requests and API errors
+│   ├── config.py         # API configuration
+│   ├── fetch.py          # Retrieve and parse quiz questions
+│   └── search.py         # Search for public quizzes
+├── core/
 │   ├── __init__.py
-│   └── controller.py      # Orchestrator linking UI with API and managing threads
-├── gui/                   # Graphical User Interface
+│   └── controller.py     # Application logic
+├── gui/
 │   ├── __init__.py
-│   └── app.py             # CustomTkinter interface rendering
-├── main.py                # Entry point and Dependency Injection initialization
-└── requirements.txt       # Project dependencies
-
+│   └── app.py            # Desktop interface
+├── tests/
+│   └── test_api_errors.py
+├── icon.ico
+├── main.py               # Start the application
+├── requirements.txt      # Dependencies
+├── LICENCE               # MIT License
+└── README.md
 ```
 
-## Installation and Execution
+## Installation
 
-1.  Clone or download the repository.
-2.  Create and activate a virtual environment:
-    Bash
+**1. Clone the repository**
 
-    ```bash
-    python -m venv venv
+```bash
+git clone https://github.com/krinzhanovskyi/kahoot_reincarnation.git
+cd kahoot_reincarnation
+```
 
-    # For Windows:
-    venv\Scripts\activate
+**2. Create a virtual environment**
 
-    # For macOS/Linux:
-    source venv/bin/activate
-    ```
+```bash
+python -m venv venv
+```
 
-3.  Install the required dependencies:
-    Bash
+Activate it using the command for your operating system:
 
-    ```bash
-    pip install -r requirements.txt
-    ```
+Windows PowerShell:
 
-4.  Execute the application:
-    Bash
-    ```bash
-    python main.py
-    ```
+```powershell
+.\venv\Scripts\Activate.ps1
+```
 
-## Usage Guide
+Windows Command Prompt:
 
-1.  Enter the suspected quiz title or the text of the first question into the search bar.
-2.  Click **Search** (or press `Enter`).
-3.  Select the appropriate quiz from the search results based on its title.
-4.  The application will load the list of questions. Click the green answer button to copy it to the clipboard.
+```cmd
+venv\Scripts\activate.bat
+```
 
-> **Note:** By cloning or downloading this project, you agree that you do not use it as a cheat program, and I, as the creator, am not responsible for your actions.
+macOS / Linux:
+
+```bash
+source venv/bin/activate
+```
+
+**3. Install dependencies**
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+**4. Run the application**
+
+```bash
+python main.py
+```
+
+## How to Use
+
+1. Enter a quiz title or question in the search field.
+2. Click **Search** or press **Enter**.
+3. Select a quiz from the search results.
+4. View the questions and available correct answers.
+5. Click **Copy Answer** to copy an answer to the clipboard.
+6. Click **Export JSON** to save the loaded questions and answers.
+
+### F9 Shortcut
+
+Copy a quiz title or question to your clipboard and press **F9**. The application will come to the front and start a search using the copied text.
+
+The F9 shortcut may require additional permissions on some operating systems.
+
+## Running Tests
+
+Run the unit tests from the project directory:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+## Known Limitations
+
+- The application searches publicly available quizzes only.
+- Results depend on the Kahoot API and the available quiz data.
+- Some question formats, such as puzzles or typed answers, are not yet supported.
+- Correct answers may be unavailable for some questions.
+- The global F9 shortcut may not work on every operating system.
+
+## Disclaimer
+
+This is an educational project intended for studying Python and reviewing public quiz content. It is not intended for cheating or bypassing access restrictions.
+
+This project is not affiliated with or endorsed by Kahoot.
+
+## License
+
+This project is released under the MIT License. See [LICENCE](LICENCE) for details.
