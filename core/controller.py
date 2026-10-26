@@ -132,5 +132,9 @@ class KahootController:
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(self.current_quiz_data, f, ensure_ascii=False, indent=4)
             self.view.show_message(f"Exported successfully to {file_path}", "#10B981")
-        except Exception:
+        except OSError:
+            logger.exception("Could not write quiz export to %s", file_path)
+            self.view.show_message("Failed to export file.", "#EF4444")
+        except (TypeError, ValueError):
+            logger.exception("Quiz data could not be serialized as JSON")
             self.view.show_message("Failed to export file.", "#EF4444")
