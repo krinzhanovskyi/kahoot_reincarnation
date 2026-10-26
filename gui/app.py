@@ -7,6 +7,8 @@ import pyperclip
 from tkinter import Misc, TclError, filedialog
 import customtkinter as ctk
 
+logger = logging.getLogger(__name__)
+
 def get_resource_path(relative_path):
     try:
         base_path = sys._MEIPASS
@@ -27,8 +29,8 @@ class KahootParserApp(ctk.CTk):
         icon_path = get_resource_path("icon.ico")
         try:
             self.iconbitmap(icon_path)
-        except Exception as e:
-            print(f"Icon not detected: {e}")
+        except TclError as exc:
+            logger.warning("Could not load window icon %s: %s", icon_path, exc)
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(3, weight=1)
