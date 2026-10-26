@@ -44,7 +44,7 @@ kahoot_reincarnation/
 ├── icon.ico
 ├── main.py               # Start the application
 ├── requirements.txt      # Dependencies
-├── LICENCE               # MIT License
+├── LICENSE               # MIT License
 └── README.md
 ```
 
@@ -134,4 +134,4 @@ This project is not affiliated with or endorsed by Kahoot.
 
 ## License
 
-This project is released under the MIT License. See [LICENCE](LICENCE) for details.
+This project is released under the MIT License. See [LICENSE](LICENSE) for details.
