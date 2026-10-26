@@ -610,5 +610,64 @@ class ClipboardTests(unittest.TestCase):
         self.assertIn("copied", view.show_message.call_args.args[0])
 
 
+class TextFormattingTests(unittest.TestCase):
+    def test_inline_html_and_entities(self):
+        from api.text import clean_text
+        self.assertEqual(clean_text('<p><b>Rock</b> &amp; Roll&nbsp;!</p>'), 'Rock & Roll !')
+        self.assertEqual(clean_text('&lt;div&gt;'), '<div>')
+        self.assertEqual(clean_text('&amp;lt;'), '&lt;')
+
+    def test_paragraphs_breaks_and_whitespace(self):
+        from api.text import clean_text
+        self.assertEqual(clean_text('<p> First </p><p>Second<br>line</p>'), 'First\n\nSecond\nline')
+        self.assertEqual(clean_text('  a\t b\r\nc  '), 'a b\nc')
+
+    def test_math_code_and_indices_preserve_meaning(self):
+        from api.text import clean_text
+        self.assertEqual(clean_text('2 < 3 && 5 > 4'), '2 < 3 && 5 > 4')
+        self.assertEqual(clean_text('x<sup>2</sup> + H<sub>2</sub>O'), 'x^(2) + H_(2)O')
+        self.assertEqual(clean_text('Use &lt;b&gt;bold&lt;/b&gt;'), 'Use <b>bold</b>')
+        self.assertEqual(clean_text('vector<int>'), 'vector<int>')
+
+    def test_hidden_content_and_invalid_input(self):
+        from api.text import clean_text
+        self.assertEqual(clean_text('A<script>alert(1)</script><style>x</style>B'), 'AB')
+        for value in (None, [], {}, 42):
+            self.assertEqual(clean_text(value), '')
+
+    def test_cleaning_is_used_by_search_and_quiz_parser(self):
+        with patch('api.search.get_json', return_value={'entities': [{'uuid': 'abc', 'title': '<b>Bike</b> &amp; Parts'}]}):
+            self.assertEqual(search_quizzes('abc')[0]['title'], 'Bike & Parts')
+        item = parse_question({'type': 'quiz', 'question': '<p>What is <b>A</b>?</p>',
+                              'choices': [{'correct': True, 'answer': '<b>A</b> &amp; B'}]})
+        self.assertEqual(item['question'], 'What is A?')
+        self.assertEqual(item['answers'], ['A & B'])
+
+    def test_empty_formatted_answer_is_invalid_and_image_is_unsupported(self):
+        for answer, status in [('<b> </b>', 'invalid_data'), ('<img src="x">', 'unsupported'),
+                               ('Text <img src="x">', 'unsupported')]:
+            with self.subTest(answer=answer):
+                item = parse_question({'type': 'quiz', 'question': 'Q', 'choices': [{'correct': True, 'answer': answer}]})
+                self.assertEqual(item['answers'], [])
+                self.assertEqual(item['status'], status)
+
+    def test_wrapping_tracks_width_and_display_scaling(self):
+        from gui.app import KahootParserApp
+        from types import SimpleNamespace
+        label = Mock()
+        label._get_widget_scaling.return_value = 1.5
+        app = SimpleNamespace()
+        with patch('gui.app.ctk.CTkLabel', return_value=label), patch('gui.app.Misc.bind') as bind:
+            KahootParserApp._wrapped_label(app, Mock(), 'Long text', Mock())
+        resize = bind.call_args.args[2]
+        resize(SimpleNamespace(width=600))
+        label.configure.assert_called_with(wraplength=396)
+        count = label.configure.call_count
+        resize(SimpleNamespace(width=600))
+        self.assertEqual(label.configure.call_count, count)
+        resize(SimpleNamespace(width=300))
+        label.configure.assert_called_with(wraplength=196)
+
+
 if __name__ == "__main__":
     unittest.main()

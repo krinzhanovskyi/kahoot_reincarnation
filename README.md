@@ -31,6 +31,7 @@ kahoot_reincarnation/
 │   ├── client.py         # HTTP requests and API errors
 │   ├── config.py         # API configuration
 │   ├── fetch.py          # Retrieve and parse quiz questions
+│   ├── text.py           # Clean HTML and format question text
 │   └── search.py         # Search for public quizzes
 ├── core/
 │   ├── __init__.py

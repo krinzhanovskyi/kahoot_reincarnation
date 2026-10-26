@@ -4,7 +4,7 @@ import os
 import sys
 import keyboard
 import pyperclip
-from tkinter import TclError, filedialog
+from tkinter import Misc, TclError, filedialog
 import customtkinter as ctk
 
 def get_resource_path(relative_path):
@@ -20,6 +20,7 @@ class KahootParserApp(ctk.CTk):
         
         self.title("Kahoot Reincarnation Parser")
         self.geometry("950x800")
+        self.minsize(600, 400)
         self.configure(fg_color="#1A1A1A")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
@@ -125,7 +126,7 @@ class KahootParserApp(ctk.CTk):
             try:
                 self.after_cancel(self._poll_id)
             except TclError:
-                pass  # Callback may already have been cancelled.
+                pass  
             self._poll_id = None
         if self._hotkey_handle is not None:
             try:
@@ -137,7 +138,6 @@ class KahootParserApp(ctk.CTk):
         self.destroy()
 
     def _on_hotkey_press(self):
-        # keyboard invokes this on its own thread: no Tk calls here.
         if not self._closing and self.controller is not None and not self.controller.is_busy:
             self._hotkey_pending.set()
 
@@ -222,20 +222,35 @@ class KahootParserApp(ctk.CTk):
         self.show_message(f"Found {len(quizzes)} quizzes. Select one to extract answers.", "#10B981")
 
         for index, quiz in enumerate(quizzes):
-            btn = ctk.CTkButton(
-                self.results_frame,
-                text=f"{quiz['title']}   •   UUID: {quiz['uuid']}",
-                font=self.font_main,
-                height=50,
-                corner_radius=10,
-                anchor="w",
-                fg_color="#2A2D34",
-                hover_color="#3E424B",
-                text_color="#E2E8F0",
-                command=lambda u=quiz["uuid"]: self.controller.handle_fetch(u) if self.controller else None
+            card = ctk.CTkFrame(self.results_frame, fg_color="#2A2D34", corner_radius=12)
+            card.grid(row=index, column=0, padx=5, pady=5, sticky="ew")
+            card.grid_columnconfigure(0, weight=1)
+            self.result_widgets.append(card)
+            label = self._wrapped_label(card, quiz["title"], self.font_bold)
+            label.grid(row=0, column=0, padx=15, pady=(12, 4), sticky="ew")
+            identifier = self._wrapped_label(card, f"UUID: {quiz['uuid']}", self.font_main, "#A0AEC0")
+            identifier.grid(row=1, column=0, padx=15, pady=(0, 12), sticky="ew")
+            button = ctk.CTkButton(
+                card, text="Open", width=80,
+                command=lambda u=quiz["uuid"]: self.controller.handle_fetch(u) if self.controller else None,
             )
-            btn.grid(row=index, column=0, padx=5, pady=5, sticky="ew")
-            self.result_widgets.append(btn)
+            button.grid(row=0, column=1, rowspan=2, padx=15, pady=12)
+
+    def _wrapped_label(self, parent, text, font, color="#FFFFFF"):
+        label = ctk.CTkLabel(
+            parent, text=text, font=font, text_color=color, width=1,
+            wraplength=100, justify="left", anchor="w",
+        )
+        last_width = None
+
+        def resize(event):
+            nonlocal last_width
+            width = max(20, int(event.width / label._get_widget_scaling()) - 4)
+            if width != last_width:
+                last_width = width
+                label.configure(wraplength=width)
+        Misc.bind(label, "<Configure>", resize, add="+")
+        return label
 
     def display_quiz_answers(self, answers_data):
         self.search_button.configure(state="normal")
@@ -259,44 +274,37 @@ class KahootParserApp(ctk.CTk):
             card.grid_columnconfigure(0, weight=1)
             self.result_widgets.append(card)
 
-            q_label = ctk.CTkLabel(
-                card,
-                text=f"{index + 1}. [{item.get('type', 'unknown')}] {item['question']}",
-                font=self.font_question,
-                text_color="#FFFFFF",
-                wraplength=800,
-                justify="left"
+            q_label = self._wrapped_label(
+                card, f"{index + 1}. [{item.get('type', 'unknown')}] {item['question']}",
+                self.font_question,
             )
-            q_label.grid(row=0, column=0, padx=20, pady=(20, 5), sticky="w")
+            q_label.grid(row=0, column=0, padx=20, pady=(20, 5), sticky="ew")
 
             details = "\n".join(filter(None, (item.get("message"), item.get("warning"))))
             if details:
-                warning_label = ctk.CTkLabel(
-                    card, text=details, font=self.font_main,
-                    text_color="#FBBF24" if item.get("warning") else "#A0AEC0",
-                    wraplength=800, justify="left",
+                warning_label = self._wrapped_label(
+                    card, details, self.font_main,
+                    "#FBBF24" if item.get("warning") else "#A0AEC0",
                 )
-                warning_label.grid(row=1, column=0, padx=20, pady=5, sticky="w")
+                warning_label.grid(row=1, column=0, padx=20, pady=5, sticky="ew")
 
-            has_answers = bool(item["answers"])
-            answers_text = "  |  ".join(item["answers"])
-            empty_text = {
-                "content": "Content slide", "no_answer_required": "No correct answer required",
-                "unsupported": "Unsupported format", "invalid_data": "Answers unavailable",
-                "no_correct_answer": "No correct answer specified",
-            }.get(item.get("status"), "Answers unavailable")
-            
-            a_btn = ctk.CTkButton(
-                card,
-                text=f"Copy Answer: {answers_text}" if has_answers else empty_text,
-                state="normal" if has_answers else "disabled",
-                font=self.font_bold,
-                height=35,
-                corner_radius=6,
-                text_color="#FFFFFF",
-                fg_color="#10B981",
-                hover_color="#059669",
-                anchor="w",
-                command=lambda a=answers_text: self.controller.handle_copy(a) if self.controller else None
-            )
-            a_btn.grid(row=2, column=0, padx=20, pady=(10, 20), sticky="w")
+            if not item["answers"]:
+                empty_text = {
+                    "content": "Content slide", "no_answer_required": "No correct answer required",
+                    "unsupported": "Unsupported format", "invalid_data": "Answers unavailable",
+                    "no_correct_answer": "No correct answer specified",
+                }.get(item.get("status"), "Answers unavailable")
+                label = self._wrapped_label(card, empty_text, self.font_main, "#A0AEC0")
+                label.grid(row=2, column=0, padx=20, pady=(10, 20), sticky="ew")
+
+            for answer_index, answer in enumerate(item["answers"]):
+                row = ctk.CTkFrame(card, fg_color="#1E1F24", corner_radius=8)
+                row.grid(row=answer_index + 2, column=0, padx=20, pady=(5, 10), sticky="ew")
+                row.grid_columnconfigure(0, weight=1)
+                label = self._wrapped_label(row, answer, self.font_bold, "#6EE7B7")
+                label.grid(row=0, column=0, padx=12, pady=12, sticky="ew")
+                button = ctk.CTkButton(
+                    row, text="Copy", width=75, fg_color="#10B981", hover_color="#059669",
+                    command=lambda a=answer: self.controller.handle_copy(a) if self.controller else None,
+                )
+                button.grid(row=0, column=1, padx=12, pady=12, sticky="n")

@@ -2,6 +2,7 @@ import logging
 
 from api.client import KahootAPIError, get_json
 from api.config import QUIZ_URL
+from api.text import clean_text, contains_image
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +31,10 @@ def _read_choices(choices):
             continue
         if not choice["correct"]:
             continue
-        answer = choice.get("answer")
-        if isinstance(answer, str) and answer.strip():
+        answer = clean_text(choice.get("answer"))
+        if contains_image(choice.get("answer")):
+            media_answer = True
+        elif isinstance(answer, str) and answer.strip():
             answers.append(answer)
         elif choice.get("image") or choice.get("media"):
             media_answer = True
@@ -59,9 +62,9 @@ def parse_question(question):
         item["type"] = raw_type.strip().lower()
     kind = item["type"]
     warnings = []
-    text = question.get("question")
+    text = clean_text(question.get("question"))
     if kind in CONTENT_TYPES and (not isinstance(text, str) or not text.strip()):
-        text = question.get("title", "Slide")
+        text = clean_text(question.get("title", "Slide"))
     if isinstance(text, str) and text.strip():
         item["question"] = text
     elif kind in CONTENT_TYPES:

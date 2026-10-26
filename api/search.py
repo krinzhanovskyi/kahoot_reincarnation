@@ -2,6 +2,7 @@ import logging
 
 from api.client import KahootAPIError, get_json
 from api.config import SEARCH_URL
+from api.text import clean_text
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ def search_quizzes(query, limit=5):
         if quiz_data is None:
             logger.warning("Skipped search result %s: missing valid UUID", index + 1)
             continue
-        title = quiz_data.get("title")
+        title = clean_text(quiz_data.get("title"))
         if not isinstance(title, str) or not title.strip():
             title = "Untitled"
         results.append({"title": title, "uuid": quiz_data["uuid"].strip()})
