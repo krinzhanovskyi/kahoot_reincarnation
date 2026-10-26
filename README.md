@@ -101,7 +101,7 @@ python main.py
 2. Click **Search** or press **Enter**.
 3. Select a quiz from the search results.
 4. View the questions and available correct answers.
-5. Click **Copy Answer** to copy an answer to the clipboard.
+5. Click **Copy** to copy an answer to the clipboard.
 6. Click **Export JSON** to save the loaded questions and answers.
 
 ### F9 Shortcut

@@ -28,7 +28,7 @@ class KahootParserApp(ctk.CTk):
         try:
             self.iconbitmap(icon_path)
         except Exception as e:
-            print(f"Icon not detecktet: {e}")
+            print(f"Icon not detected: {e}")
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(3, weight=1)
