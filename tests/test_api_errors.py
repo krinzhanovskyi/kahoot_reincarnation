@@ -1,12 +1,12 @@
 """Run from the project root: python -m unittest discover -s tests -v."""
 
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, mock_open, patch
 
 import requests
 
 from api.client import KahootAPIError, get_json
-from api.config import REQUEST_TIMEOUT
+from api.config import QUIZ_URL, REQUEST_TIMEOUT
 from api.fetch import get_quiz_answers, parse_question
 from api.search import search_quizzes
 from core.controller import KahootController
@@ -77,6 +77,20 @@ class APIErrorTests(unittest.TestCase):
             self.assertEqual(result[0]["question"], "Q")
             self.assertEqual(result[0]["answers"], ["A", "C"])
             self.assertEqual(result[0]["status"], "supported")
+
+    def test_quiz_identifier_is_quoted_as_one_url_path_segment(self):
+        identifier = "abc/def?mode=all#section"
+        with patch("api.fetch.get_json", return_value={"questions": []}) as get:
+            self.assertEqual(get_quiz_answers(identifier), [])
+        get.assert_called_once_with(f"{QUIZ_URL}abc%2Fdef%3Fmode%3Dall%23section")
+
+    def test_invalid_quiz_identifiers_are_rejected_before_request(self):
+        for identifier in (None, "", "  ", 123, ["abc"]):
+            with self.subTest(identifier=identifier):
+                with patch("api.fetch.get_json") as get:
+                    with self.assertRaisesRegex(KahootAPIError, "Invalid quiz identifier"):
+                        get_quiz_answers(identifier)
+                get.assert_not_called()
 
     def test_errors_propagate_from_both_api_functions(self):
         for function in (search_quizzes, get_quiz_answers):
@@ -299,6 +313,43 @@ class ControllerErrorTests(unittest.TestCase):
         controller.current_quiz_data = [{"question": "old"}]
         self.begin(controller, "handle_fetch")
         self.assertEqual(controller.current_quiz_data, [])
+
+    def test_export_oserror_is_logged_and_reported(self):
+        view = Mock()
+        controller = KahootController(view)
+        controller.current_quiz_data = [{"question": "Q", "answers": ["A"]}]
+        with patch("builtins.open", side_effect=OSError("disk is full")):
+            with self.assertLogs("core.controller", level="ERROR") as logs:
+                controller.handle_export("quiz.json")
+        self.assertIsNotNone(logs.records[0].exc_info)
+        view.show_message.assert_called_once_with("Failed to export file.", "#EF4444")
+
+    def test_export_serialization_error_is_logged_and_reported(self):
+        view = Mock()
+        controller = KahootController(view)
+        controller.current_quiz_data = [{"not_json": object()}]
+        with patch("builtins.open", mock_open()):
+            with self.assertLogs("core.controller", level="ERROR") as logs:
+                controller.handle_export("quiz.json")
+        self.assertIsNotNone(logs.records[0].exc_info)
+        view.show_message.assert_called_once_with("Failed to export file.", "#EF4444")
+
+
+class EntryPointTests(unittest.TestCase):
+    def test_interrupt_handler_accepts_keyboardinterrupt_subclasses(self):
+        import sys
+        original_hook = sys.excepthook
+        try:
+            from main import quiet_interrupt_handler
+
+            class AppInterrupt(KeyboardInterrupt):
+                pass
+
+            with patch("main.sys.exit") as exit_process:
+                quiet_interrupt_handler(AppInterrupt, AppInterrupt(), None)
+            exit_process.assert_called_once_with(0)
+        finally:
+            sys.excepthook = original_hook
 
 
 class ControllerRequestTests(unittest.TestCase):

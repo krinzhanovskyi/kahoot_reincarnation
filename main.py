@@ -5,7 +5,7 @@ from gui.app import KahootParserApp
 from core.controller import KahootController
 
 def quiet_interrupt_handler(exctype, value, traceback):
-    if exctype == KeyboardInterrupt:
+    if issubclass(exctype, KeyboardInterrupt):
         sys.exit(0)
     else:
         sys.__excepthook__(exctype, value, traceback)
