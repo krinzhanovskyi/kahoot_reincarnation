@@ -1,4 +1,5 @@
 import logging
+from urllib.parse import quote
 
 from api.client import KahootAPIError, get_json
 from api.config import QUIZ_URL
@@ -102,7 +103,10 @@ def parse_question(question):
 
 
 def get_quiz_answers(uuid):
-    data = get_json(f"{QUIZ_URL}{uuid}")
+    if not isinstance(uuid, str) or not uuid.strip():
+        raise KahootAPIError("Invalid quiz identifier.")
+    quiz_id = quote(uuid.strip(), safe="")
+    data = get_json(f"{QUIZ_URL}{quiz_id}")
     if not isinstance(data, dict) or not isinstance(data.get("questions"), list):
         raise KahootAPIError("Unexpected quiz data format: expected a list of questions.")
     questions_data = []
