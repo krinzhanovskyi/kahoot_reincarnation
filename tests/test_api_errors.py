@@ -1,7 +1,7 @@
 """Run from the project root: python -m unittest discover -s tests -v."""
 
 import unittest
-from unittest.mock import Mock, mock_open, patch
+from unittest.mock import Mock, call, mock_open, patch
 
 import requests
 
@@ -531,9 +531,12 @@ class ShutdownTests(unittest.TestCase):
         from types import SimpleNamespace
         app = SimpleNamespace(
             _closing=False, _hotkey_pending=threading.Event(), _poll_id="timer-1",
-            _hotkey_handle="hotkey-1", controller=Mock(), after_cancel=Mock(),
+            _hotkey_handle="hotkey-1", _capture_hotkey_handle="hotkey-2",
+            _capture_pending=threading.Event(), controller=Mock(), after_cancel=Mock(),
             after=Mock(return_value="timer-2"), destroy=Mock(),
             _poll_events=Mock(), _process_clipboard_search=Mock(),
+            _process_clipboard_capture=Mock(),
+            _on_capture_hotkey_press=Mock(),
         )
         app.controller.is_busy = False
         return app
@@ -559,7 +562,7 @@ class ShutdownTests(unittest.TestCase):
             KahootParserApp.on_closing(app)
         app.controller.close.assert_called_once()
         app.after_cancel.assert_called_once_with("timer-1")
-        remove.assert_called_once_with("hotkey-1")
+        self.assertEqual(remove.call_args_list, [call("hotkey-1"), call("hotkey-2")])
         app.destroy.assert_called_once()
         KahootParserApp._poll_events(app)
         app.after.assert_not_called()
@@ -577,9 +580,12 @@ class ShutdownTests(unittest.TestCase):
         from gui.app import KahootParserApp
         app = self.fake_app()
         app._hotkey_pending.set()
+        app._capture_pending.set()
         KahootParserApp._poll_events(app)
         app.controller.process_pending_results.assert_called_once()
         app._process_clipboard_search.assert_called_once()
+        app._process_clipboard_capture.assert_called_once()
+        self.assertFalse(app._capture_pending.is_set())
         self.assertFalse(app._hotkey_pending.is_set())
         app.after.assert_called_once_with(50, app._poll_events)
         self.assertEqual(app._poll_id, "timer-2")
@@ -587,11 +593,13 @@ class ShutdownTests(unittest.TestCase):
 
 class ClipboardTests(unittest.TestCase):
     def fake_app(self):
+        import threading
         from types import SimpleNamespace
         controller = Mock()
         controller.is_busy = False
         return SimpleNamespace(
             _closing=False, controller=controller, _hotkey_handle=None,
+            _capture_hotkey_handle=None, _capture_pending=threading.Event(),
             _on_hotkey_press=Mock(), show_message=Mock(), search_entry=Mock(),
             deiconify=Mock(), attributes=Mock(), focus_force=Mock(), _on_search_clicked=Mock(),
         )
@@ -603,7 +611,10 @@ class ClipboardTests(unittest.TestCase):
             with self.assertLogs("gui.app", level="ERROR"):
                 KahootParserApp._register_hotkey(app)
         self.assertIsNone(app._hotkey_handle)
-        self.assertIn("Search", app.show_message.call_args.args[0])
+        self.assertIsNone(app._capture_hotkey_handle)
+        app.show_message.assert_any_call(
+            "F9 is unavailable. Enter a query and use Search instead.", "#D97706"
+        )
         app.search_entry.get.return_value = "bike"
         KahootParserApp._on_search_clicked(app)
         app.controller.handle_search.assert_called_once_with("bike")
@@ -611,10 +622,14 @@ class ClipboardTests(unittest.TestCase):
     def test_hotkey_registration_success_retains_cleanup_handle(self):
         from gui.app import KahootParserApp
         app = self.fake_app()
-        with patch("gui.app.keyboard.add_hotkey", return_value="handle") as add:
+        with patch("gui.app.keyboard.add_hotkey", side_effect=["f9-handle", "f10-handle"]) as add:
             KahootParserApp._register_hotkey(app)
-        self.assertEqual(app._hotkey_handle, "handle")
-        add.assert_called_once_with("F9", app._on_hotkey_press)
+        self.assertEqual(app._hotkey_handle, "f9-handle")
+        self.assertEqual(app._capture_hotkey_handle, "f10-handle")
+        self.assertEqual(add.call_args_list, [
+            call("F9", app._on_hotkey_press),
+            call("F10", app._on_capture_hotkey_press),
+        ])
         app.show_message.assert_not_called()
 
     def test_clipboard_read_failure_does_not_start_search_or_modify_entry(self):
@@ -647,6 +662,56 @@ class ClipboardTests(unittest.TestCase):
             KahootParserApp._process_clipboard_search(app)
         app.search_entry.insert.assert_called_once_with(0, "bike")
         app._on_search_clicked.assert_called_once()
+
+    def test_capture_hotkey_only_schedules_work_on_gui_thread(self):
+        import threading
+        from types import SimpleNamespace
+        from gui.app import KahootParserApp
+        app = SimpleNamespace(
+            _closing=False, controller=Mock(), _capture_pending=threading.Event(),
+            _process_clipboard_capture=Mock(),
+        )
+        app.controller.is_busy = False
+
+        KahootParserApp._on_capture_hotkey_press(app)
+
+        self.assertTrue(app._capture_pending.is_set())
+        app._process_clipboard_capture.assert_not_called()
+
+    def test_capture_hotkey_ignores_closed_or_busy_app(self):
+        import threading
+        from types import SimpleNamespace
+        from gui.app import KahootParserApp
+        for closing, busy in ((True, False), (False, True)):
+            app = SimpleNamespace(
+                _closing=closing, controller=Mock(),
+                _capture_pending=threading.Event(),
+            )
+            app.controller.is_busy = busy
+            KahootParserApp._on_capture_hotkey_press(app)
+            self.assertFalse(app._capture_pending.is_set())
+
+    def test_f10_capture_copies_clipboard_question_without_searching(self):
+        from gui.app import KahootParserApp
+        app = self.fake_app()
+        with patch("gui.app.pyperclip.paste", return_value="  What is 2 + 2?  "):
+            KahootParserApp._process_clipboard_capture(app)
+        app.search_entry.delete.assert_called_once_with(0, "end")
+        app.search_entry.insert.assert_called_once_with(0, "What is 2 + 2?")
+        app.search_entry.focus_set.assert_called_once()
+        app.controller.handle_search.assert_not_called()
+        self.assertIn("Press Search", app.show_message.call_args.args[0])
+
+    def test_f10_capture_rejects_empty_clipboard_without_search(self):
+        from gui.app import KahootParserApp
+        for content in ("", "   ", None, b"bytes"):
+            with self.subTest(content=content):
+                app = self.fake_app()
+                with patch("gui.app.pyperclip.paste", return_value=content):
+                    KahootParserApp._process_clipboard_capture(app)
+                app.search_entry.delete.assert_not_called()
+                app.controller.handle_search.assert_not_called()
+                app.show_message.assert_called_once()
 
     def test_copy_failure_never_reports_success_and_can_retry(self):
         import pyperclip
@@ -722,3 +787,4 @@ class TextFormattingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

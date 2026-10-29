@@ -37,8 +37,10 @@ class KahootParserApp(ctk.CTk):
 
         self._closing = False
         self._hotkey_pending = threading.Event()
+        self._capture_pending = threading.Event()
         self._poll_id = None
         self._hotkey_handle = None
+        self._capture_hotkey_handle = None
         self.controller = None
         self.result_widgets = []
 
@@ -96,7 +98,7 @@ class KahootParserApp(ctk.CTk):
         self.export_button.grid(row=0, column=2, padx=(0, 15), pady=15)
 
 
-        self.status_label = ctk.CTkLabel(self, text="Ready. Press F9 to search from clipboard.", font=self.font_main, text_color="#A0AEC0")
+        self.status_label = ctk.CTkLabel(self, text="F9: search clipboard. F10: copy selected question into search.", font=self.font_main, text_color="#A0AEC0")
         self.status_label.grid(row=2, column=0, padx=25, pady=(0, 10), sticky="w")
 
         self.results_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
@@ -111,9 +113,21 @@ class KahootParserApp(ctk.CTk):
         try:
             self._hotkey_handle = keyboard.add_hotkey('F9', self._on_hotkey_press)
         except Exception:
-            logging.getLogger(__name__).exception("Could not register F9")
+            logger.exception("Could not register F9")
             self._hotkey_handle = None
             self.show_message("F9 is unavailable. Enter a query and use Search instead.", "#D97706")
+
+        try:
+            self._capture_hotkey_handle = keyboard.add_hotkey(
+                'F10', self._on_capture_hotkey_press
+            )
+        except Exception:
+            logger.exception("Could not register F10")
+            self._capture_hotkey_handle = None
+            self.show_message(
+                "F10 capture is unavailable. Copy a question and paste it manually.",
+                "#D97706",
+            )
 
     def set_controller(self, controller):
         self.controller = controller
@@ -130,13 +144,19 @@ class KahootParserApp(ctk.CTk):
             except TclError:
                 pass  
             self._poll_id = None
-        if self._hotkey_handle is not None:
-            try:
-                keyboard.remove_hotkey(self._hotkey_handle)
-            except Exception:
-                logging.getLogger(__name__).exception("Could not unregister F9")
-            self._hotkey_handle = None
+        for handle, name in (
+            (self._hotkey_handle, "F9"),
+            (self._capture_hotkey_handle, "F10"),
+        ):
+            if handle is not None:
+                try:
+                    keyboard.remove_hotkey(handle)
+                except Exception:
+                    logger.exception("Could not unregister %s", name)
+        self._hotkey_handle = None
+        self._capture_hotkey_handle = None
         self._hotkey_pending.clear()
+        self._capture_pending.clear()
         self.destroy()
 
     def _on_hotkey_press(self):
@@ -150,12 +170,43 @@ class KahootParserApp(ctk.CTk):
         try:
             if self.controller is not None:
                 self.controller.process_pending_results()
+            if self._capture_pending.is_set():
+                self._capture_pending.clear()
+                self._process_clipboard_capture()
             if self._hotkey_pending.is_set():
                 self._hotkey_pending.clear()
                 self._process_clipboard_search()
         finally:
             if not self._closing:
                 self._poll_id = self.after(50, self._poll_events)
+
+    def _on_capture_hotkey_press(self):
+        if not self._closing and self.controller is not None and not self.controller.is_busy:
+            self._capture_pending.set()
+
+    def _process_clipboard_capture(self):
+        """Copy a manually selected browser question into the search field."""
+        if self._closing or self.controller is None or self.controller.is_busy:
+            return
+        try:
+            clipboard_text = pyperclip.paste()
+        except Exception:
+            logger.exception("Could not read clipboard for F10 capture")
+            self.show_message("Could not read the clipboard. Copy the question and try again.", "#EF4444")
+            return
+        if not isinstance(clipboard_text, str) or not clipboard_text.strip():
+            self.show_message("Clipboard is empty. Select and copy the question first.", "#EF4444")
+            return
+
+        query = clipboard_text.strip()
+        self.deiconify()
+        self.attributes("-topmost", True)
+        self.focus_force()
+        self.attributes("-topmost", False)
+        self.search_entry.delete(0, 'end')
+        self.search_entry.insert(0, query)
+        self.search_entry.focus_set()
+        self.show_message("Question copied to search. Press Search when ready.", "#10B981")
 
     def _process_clipboard_search(self):
         if self._closing or self.controller is None or self.controller.is_busy:
@@ -310,4 +361,5 @@ class KahootParserApp(ctk.CTk):
                     command=lambda a=answer: self.controller.handle_copy(a) if self.controller else None,
                 )
                 button.grid(row=0, column=1, padx=12, pady=12, sticky="n")
+
 
