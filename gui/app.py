@@ -28,7 +28,7 @@ class KahootParserApp(ctk.CTk):
         
         icon_path = get_resource_path("icon.ico")
         try:
-            self.iconbitmap(icon_path)
+            self.iconbitmap(default=icon_path)
         except TclError as exc:
             logger.warning("Could not load window icon %s: %s", icon_path, exc)
 
@@ -310,3 +310,4 @@ class KahootParserApp(ctk.CTk):
                     command=lambda a=answer: self.controller.handle_copy(a) if self.controller else None,
                 )
                 button.grid(row=0, column=1, padx=12, pady=12, sticky="n")
+
