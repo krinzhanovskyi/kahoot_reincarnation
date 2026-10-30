@@ -622,6 +622,7 @@ class ClipboardTests(unittest.TestCase):
     def test_hotkey_registration_success_retains_cleanup_handle(self):
         from gui.app import KahootParserApp
         app = self.fake_app()
+        app._on_capture_hotkey_press = Mock()
         with patch("gui.app.keyboard.add_hotkey", side_effect=["f9-handle", "f10-handle"]) as add:
             KahootParserApp._register_hotkey(app)
         self.assertEqual(app._hotkey_handle, "f9-handle")
