@@ -2,10 +2,12 @@ import logging
 import threading
 import os
 import sys
+from queue import Empty, Queue
 import keyboard
 import pyperclip
 from tkinter import Misc, TclError, filedialog
 import customtkinter as ctk
+from core.ocr import OCRSetupError, ScreenCaptureError, recognize_screen_text
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,8 @@ class KahootParserApp(ctk.CTk):
         self._closing = False
         self._hotkey_pending = threading.Event()
         self._capture_pending = threading.Event()
+        self._ocr_results = Queue()
+        self._ocr_in_progress = False
         self._poll_id = None
         self._hotkey_handle = None
         self._capture_hotkey_handle = None
@@ -98,7 +102,7 @@ class KahootParserApp(ctk.CTk):
         self.export_button.grid(row=0, column=2, padx=(0, 15), pady=15)
 
 
-        self.status_label = ctk.CTkLabel(self, text="F9: search clipboard. F10: copy selected question into search.", font=self.font_main, text_color="#A0AEC0")
+        self.status_label = ctk.CTkLabel(self, text="F9: search clipboard. F10: scan screen text into search.", font=self.font_main, text_color="#A0AEC0")
         self.status_label.grid(row=2, column=0, padx=25, pady=(0, 10), sticky="w")
 
         self.results_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
@@ -125,7 +129,7 @@ class KahootParserApp(ctk.CTk):
             logger.exception("Could not register F10")
             self._capture_hotkey_handle = None
             self.show_message(
-                "F10 capture is unavailable. Copy a question and paste it manually.",
+                "F10 screen capture is unavailable. Enter a query manually.",
                 "#D97706",
             )
 
@@ -157,6 +161,7 @@ class KahootParserApp(ctk.CTk):
         self._capture_hotkey_handle = None
         self._hotkey_pending.clear()
         self._capture_pending.clear()
+        self._ocr_in_progress = False
         self.destroy()
 
     def _on_hotkey_press(self):
@@ -172,7 +177,8 @@ class KahootParserApp(ctk.CTk):
                 self.controller.process_pending_results()
             if self._capture_pending.is_set():
                 self._capture_pending.clear()
-                self._process_clipboard_capture()
+                self._start_screen_ocr()
+            self._apply_ocr_result()
             if self._hotkey_pending.is_set():
                 self._hotkey_pending.clear()
                 self._process_clipboard_search()
@@ -181,24 +187,62 @@ class KahootParserApp(ctk.CTk):
                 self._poll_id = self.after(50, self._poll_events)
 
     def _on_capture_hotkey_press(self):
-        if not self._closing and self.controller is not None and not self.controller.is_busy:
+        if (
+            not self._closing
+            and self.controller is not None
+            and not self.controller.is_busy
+            and not self._ocr_in_progress
+        ):
             self._capture_pending.set()
 
-    def _process_clipboard_capture(self):
-        """Copy a manually selected browser question into the search field."""
-        if self._closing or self.controller is None or self.controller.is_busy:
-            return
-        try:
-            clipboard_text = pyperclip.paste()
-        except Exception:
-            logger.exception("Could not read clipboard for F10 capture")
-            self.show_message("Could not read the clipboard. Copy the question and try again.", "#EF4444")
-            return
-        if not isinstance(clipboard_text, str) or not clipboard_text.strip():
-            self.show_message("Clipboard is empty. Select and copy the question first.", "#EF4444")
+    def _start_screen_ocr(self):
+        if (
+            self._closing
+            or self.controller is None
+            or self.controller.is_busy
+            or self._ocr_in_progress
+        ):
             return
 
-        query = clipboard_text.strip()
+        self._ocr_in_progress = True
+        self.show_message("Reading text from the screen...", "#A0AEC0")
+        try:
+            worker = threading.Thread(target=self._screen_ocr_worker, daemon=True)
+            worker.start()
+        except Exception:
+            self._ocr_in_progress = False
+            logger.exception("Could not start screen OCR")
+            self.show_message("Could not start screen recognition. Please try again.", "#EF4444")
+
+    def _screen_ocr_worker(self):
+        try:
+            result = (recognize_screen_text(), None)
+        except (OCRSetupError, ScreenCaptureError) as exc:
+            result = (None, str(exc))
+        except Exception:
+            logger.exception("Unexpected error while recognizing screen text")
+            result = (None, "Unexpected error while recognizing screen text.")
+
+        if not self._closing:
+            self._ocr_results.put(result)
+
+    def _apply_ocr_result(self):
+        try:
+            text, error = self._ocr_results.get_nowait()
+        except Empty:
+            return
+
+        self._ocr_in_progress = False
+        if self._closing:
+            return
+        if error:
+            self.show_message(error, "#EF4444")
+            return
+        if not text or not text.strip():
+            self.show_message("No text was found on the screen. Try again.", "#EF4444")
+            return
+
+        query = text.strip()
         self.deiconify()
         self.attributes("-topmost", True)
         self.focus_force()
@@ -206,7 +250,7 @@ class KahootParserApp(ctk.CTk):
         self.search_entry.delete(0, 'end')
         self.search_entry.insert(0, query)
         self.search_entry.focus_set()
-        self.show_message("Question copied to search. Press Search when ready.", "#10B981")
+        self.show_message("Screen text copied to search. Press Search when ready.", "#10B981")
 
     def _process_clipboard_search(self):
         if self._closing or self.controller is None or self.controller.is_busy:
@@ -361,5 +405,4 @@ class KahootParserApp(ctk.CTk):
                     command=lambda a=answer: self.controller.handle_copy(a) if self.controller else None,
                 )
                 button.grid(row=0, column=1, padx=12, pady=12, sticky="n")
-
 

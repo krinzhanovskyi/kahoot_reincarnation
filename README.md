@@ -10,6 +10,7 @@ This project was created for a Software Development course to practice Python, w
 - View questions and available correct answers.
 - Copy an answer to the clipboard with one click.
 - Press **F9** to bring the app to the front and search using text from the clipboard.
+- Press **F10** to recognize visible screen text and place it in the search field.
 - Use a dark-themed interface built with CustomTkinter.
 - Export quiz questions and answers to a JSON file.
 
@@ -18,8 +19,9 @@ This project was created for a Software Development course to practice Python, w
 - **Python 3** — programming language
 - **CustomTkinter** — graphical user interface
 - **Requests** — HTTP requests to retrieve quiz data
-- **keyboard** — global F9 shortcut
+- **keyboard** — global F9 and F10 shortcuts
 - **pyperclip** — clipboard support
+- **Pillow** and **pytesseract** — screen capture and OCR
 - **JSON** — exporting quiz data
 
 ## Project Structure
@@ -35,12 +37,14 @@ kahoot_reincarnation/
 │   └── search.py         # Search for public quizzes
 ├── core/
 │   ├── __init__.py
-│   └── controller.py     # Application logic
+│   ├── controller.py     # Application logic
+│   └── ocr.py            # Screen text recognition
 ├── gui/
 │   ├── __init__.py
 │   └── app.py            # Desktop interface
 ├── tests/
-│   └── test_api_errors.py
+│   ├── test_api_errors.py
+│   └── test_ocr.py
 ├── icon.ico
 ├── main.py               # Start the application
 ├── requirements.txt      # Dependencies
@@ -108,7 +112,11 @@ python main.py
 
 Copy a quiz title or question to your clipboard and press **F9**. The application will come to the front and start a search using the copied text.
 
-The F9 shortcut may require additional permissions on some operating systems.
+### F10 Shortcut
+
+Press **F10** while the question is visible on screen. The application recognizes the visible text and places it in the search field; press **Search** when ready. OCR requires Tesseract OCR to be installed and available on `PATH`, in addition to the Python dependencies.
+
+The global shortcuts may require additional permissions on some operating systems.
 
 ## Running Tests
 

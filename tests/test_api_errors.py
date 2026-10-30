@@ -528,6 +528,7 @@ class ShutdownTests(unittest.TestCase):
 
     def fake_app(self):
         import threading
+        import queue
         from types import SimpleNamespace
         app = SimpleNamespace(
             _closing=False, _hotkey_pending=threading.Event(), _poll_id="timer-1",
@@ -535,8 +536,9 @@ class ShutdownTests(unittest.TestCase):
             _capture_pending=threading.Event(), controller=Mock(), after_cancel=Mock(),
             after=Mock(return_value="timer-2"), destroy=Mock(),
             _poll_events=Mock(), _process_clipboard_search=Mock(),
-            _process_clipboard_capture=Mock(),
-            _on_capture_hotkey_press=Mock(),
+            _on_capture_hotkey_press=Mock(), _screen_ocr_worker=Mock(),
+            _start_screen_ocr=Mock(), _apply_ocr_result=Mock(),
+            _ocr_results=queue.Queue(), _ocr_in_progress=False,
         )
         app.controller.is_busy = False
         return app
@@ -584,7 +586,8 @@ class ShutdownTests(unittest.TestCase):
         KahootParserApp._poll_events(app)
         app.controller.process_pending_results.assert_called_once()
         app._process_clipboard_search.assert_called_once()
-        app._process_clipboard_capture.assert_called_once()
+        app._start_screen_ocr.assert_called_once()
+        app._apply_ocr_result.assert_called_once()
         self.assertFalse(app._capture_pending.is_set())
         self.assertFalse(app._hotkey_pending.is_set())
         app.after.assert_called_once_with(50, app._poll_events)
@@ -594,13 +597,16 @@ class ShutdownTests(unittest.TestCase):
 class ClipboardTests(unittest.TestCase):
     def fake_app(self):
         import threading
+        import queue
         from types import SimpleNamespace
         controller = Mock()
         controller.is_busy = False
         return SimpleNamespace(
             _closing=False, controller=controller, _hotkey_handle=None,
             _capture_hotkey_handle=None, _capture_pending=threading.Event(),
-            _on_hotkey_press=Mock(), show_message=Mock(), search_entry=Mock(),
+            _ocr_results=queue.Queue(), _ocr_in_progress=False,
+            _on_hotkey_press=Mock(), _on_capture_hotkey_press=Mock(),
+            _screen_ocr_worker=Mock(), show_message=Mock(), search_entry=Mock(),
             deiconify=Mock(), attributes=Mock(), focus_force=Mock(), _on_search_clicked=Mock(),
         )
 
@@ -622,7 +628,6 @@ class ClipboardTests(unittest.TestCase):
     def test_hotkey_registration_success_retains_cleanup_handle(self):
         from gui.app import KahootParserApp
         app = self.fake_app()
-        app._on_capture_hotkey_press = Mock()
         with patch("gui.app.keyboard.add_hotkey", side_effect=["f9-handle", "f10-handle"]) as add:
             KahootParserApp._register_hotkey(app)
         self.assertEqual(app._hotkey_handle, "f9-handle")
@@ -670,14 +675,14 @@ class ClipboardTests(unittest.TestCase):
         from gui.app import KahootParserApp
         app = SimpleNamespace(
             _closing=False, controller=Mock(), _capture_pending=threading.Event(),
-            _process_clipboard_capture=Mock(),
+            _start_screen_ocr=Mock(), _ocr_in_progress=False,
         )
         app.controller.is_busy = False
 
         KahootParserApp._on_capture_hotkey_press(app)
 
         self.assertTrue(app._capture_pending.is_set())
-        app._process_clipboard_capture.assert_not_called()
+        app._start_screen_ocr.assert_not_called()
 
     def test_capture_hotkey_ignores_closed_or_busy_app(self):
         import threading
@@ -686,33 +691,52 @@ class ClipboardTests(unittest.TestCase):
         for closing, busy in ((True, False), (False, True)):
             app = SimpleNamespace(
                 _closing=closing, controller=Mock(),
-                _capture_pending=threading.Event(),
+                _capture_pending=threading.Event(), _ocr_in_progress=False,
             )
             app.controller.is_busy = busy
             KahootParserApp._on_capture_hotkey_press(app)
             self.assertFalse(app._capture_pending.is_set())
 
-    def test_f10_capture_copies_clipboard_question_without_searching(self):
+    def test_f10_ocr_result_fills_search_without_starting_search(self):
         from gui.app import KahootParserApp
         app = self.fake_app()
-        with patch("gui.app.pyperclip.paste", return_value="  What is 2 + 2?  "):
-            KahootParserApp._process_clipboard_capture(app)
+        app._ocr_results.put(("What is 2 + 2?", None))
+        KahootParserApp._apply_ocr_result(app)
         app.search_entry.delete.assert_called_once_with(0, "end")
         app.search_entry.insert.assert_called_once_with(0, "What is 2 + 2?")
         app.search_entry.focus_set.assert_called_once()
         app.controller.handle_search.assert_not_called()
         self.assertIn("Press Search", app.show_message.call_args.args[0])
 
-    def test_f10_capture_rejects_empty_clipboard_without_search(self):
+    def test_f10_ocr_empty_result_does_not_change_search_or_search(self):
         from gui.app import KahootParserApp
-        for content in ("", "   ", None, b"bytes"):
-            with self.subTest(content=content):
-                app = self.fake_app()
-                with patch("gui.app.pyperclip.paste", return_value=content):
-                    KahootParserApp._process_clipboard_capture(app)
-                app.search_entry.delete.assert_not_called()
-                app.controller.handle_search.assert_not_called()
-                app.show_message.assert_called_once()
+        app = self.fake_app()
+        app._ocr_results.put(("", None))
+        KahootParserApp._apply_ocr_result(app)
+        app.search_entry.delete.assert_not_called()
+        app.controller.handle_search.assert_not_called()
+        app.show_message.assert_called_once()
+
+    def test_f10_ocr_failure_is_reported_without_search(self):
+        from gui.app import KahootParserApp
+        app = self.fake_app()
+        app._ocr_in_progress = True
+        app._ocr_results.put((None, "Tesseract OCR is not installed"))
+        KahootParserApp._apply_ocr_result(app)
+        self.assertFalse(app._ocr_in_progress)
+        self.assertIn("Tesseract OCR is not installed", app.show_message.call_args.args[0])
+        app.search_entry.delete.assert_not_called()
+        app.controller.handle_search.assert_not_called()
+
+    def test_f10_starts_ocr_in_background(self):
+        from gui.app import KahootParserApp
+        app = self.fake_app()
+        with patch("gui.app.threading.Thread") as thread:
+            KahootParserApp._start_screen_ocr(app)
+        self.assertTrue(app._ocr_in_progress)
+        thread.assert_called_once()
+        thread.return_value.start.assert_called_once()
+        app.controller.handle_search.assert_not_called()
 
     def test_copy_failure_never_reports_success_and_can_retry(self):
         import pyperclip
@@ -788,4 +812,3 @@ class TextFormattingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
