@@ -5,9 +5,9 @@ import os
 import sys
 import keyboard
 import pyperclip
-from tkinter import Misc, TclError, filedialog
+from tkinter import Canvas, Misc, TclError, Toplevel, filedialog
 import customtkinter as ctk
-from core.ocr import recognize_screen_text
+from core.ocr import capture_primary_screen, crop_selection, recognize_image_text
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,13 @@ class KahootParserApp(ctk.CTk):
         self._capture_pending = threading.Event()
         self._ocr_results = queue.Queue()
         self._ocr_in_progress = False
+        self._screen_snapshot = None
+        self._selection_overlay = None
+        self._selection_canvas = None
+        self._selection_image = None
+        self._selection_start = None
+        self._selection_rect = None
+        self._selection_display_size = None
         self._poll_id = None
         self._hotkey_handle = None
         self._capture_hotkey_handle = None
@@ -102,7 +109,7 @@ class KahootParserApp(ctk.CTk):
         self.export_button.grid(row=0, column=2, padx=(0, 15), pady=15)
 
 
-        self.status_label = ctk.CTkLabel(self, text="F9: search clipboard. F10: recognize visible screen text.", font=self.font_main, text_color="#A0AEC0")
+        self.status_label = ctk.CTkLabel(self, text="F9: search clipboard. F10: select a screen region for OCR.", font=self.font_main, text_color="#A0AEC0")
         self.status_label.grid(row=2, column=0, padx=25, pady=(0, 10), sticky="w")
 
         self.results_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
@@ -149,6 +156,7 @@ class KahootParserApp(ctk.CTk):
         if self._closing:
             return
         self._closing = True
+        self._close_selection_overlay()
         if self.controller is not None:
             self.controller.close()
         if self._poll_id is not None:
@@ -211,7 +219,7 @@ class KahootParserApp(ctk.CTk):
             logger.info("Ignored F10 hotkey: app closing, controller missing, request busy, or OCR active")
 
     def _start_screen_ocr(self):
-        """Run screen OCR off the GUI thread after F10 is pressed."""
+        """Capture the desktop and let the user select the question region."""
         if (
             self._closing
             or self.controller is None
@@ -221,18 +229,128 @@ class KahootParserApp(ctk.CTk):
             logger.info("Skipped OCR start: app closing, controller missing, request busy, or OCR active")
             return
         self._ocr_in_progress = True
-        logger.info("Starting screen OCR worker")
-        self.show_message("Reading visible screen text…", "#A0AEC0")
+        logger.info("Starting screen region selection")
+        self.show_message("Select the question area on screen. Press Esc to cancel.", "#A0AEC0")
         try:
-            threading.Thread(target=self._screen_ocr_worker, daemon=True).start()
+            self._screen_snapshot = capture_primary_screen()
+            self._open_selection_overlay()
+        except Exception:
+            self._ocr_in_progress = False
+            self._screen_snapshot = None
+            logger.exception("Could not open screen region selector")
+            self.show_message("Could not capture the screen. See kahoot_parser.log.", "#EF4444")
+
+    def _open_selection_overlay(self):
+        from PIL import Image, ImageTk
+
+        width = self.winfo_screenwidth()
+        height = self.winfo_screenheight()
+        if width <= 0 or height <= 0:
+            raise RuntimeError("Could not determine primary monitor dimensions")
+
+        preview = self._screen_snapshot.resize((width, height), Image.Resampling.LANCZOS)
+        overlay = Toplevel(self)
+        overlay.overrideredirect(True)
+        overlay.attributes("-topmost", True)
+        overlay.geometry(f"{width}x{height}+0+0")
+        canvas = Canvas(overlay, width=width, height=height, highlightthickness=0, cursor="crosshair")
+        canvas.pack(fill="both", expand=True)
+        self._selection_image = ImageTk.PhotoImage(preview)
+        canvas.create_image(0, 0, image=self._selection_image, anchor="nw")
+        canvas.create_rectangle(12, 12, 600, 52, fill="#111827", outline="#111827")
+        canvas.create_text(
+            24, 32,
+            text="Drag around the question, release to OCR • Esc cancels",
+            fill="white", anchor="w", font=("Segoe UI", 14, "bold"),
+        )
+        canvas.bind("<ButtonPress-1>", self._selection_mouse_down)
+        canvas.bind("<B1-Motion>", self._selection_mouse_move)
+        canvas.bind("<ButtonRelease-1>", self._selection_mouse_up)
+        overlay.bind("<Escape>", lambda _event: self._cancel_screen_selection())
+        overlay.protocol("WM_DELETE_WINDOW", self._cancel_screen_selection)
+        overlay._ocr_photo = self._selection_image
+        self._selection_overlay = overlay
+        self._selection_canvas = canvas
+        self._selection_display_size = (width, height)
+        overlay.grab_set()
+        overlay.focus_force()
+        logger.info("Screen region selector opened at %dx%d", width, height)
+
+    def _selection_mouse_down(self, event):
+        self._selection_start = (event.x, event.y)
+        if self._selection_rect is not None:
+            self._selection_canvas.delete(self._selection_rect)
+        self._selection_rect = self._selection_canvas.create_rectangle(
+            event.x, event.y, event.x, event.y,
+            outline="#22D3EE", width=3,
+        )
+
+    def _selection_mouse_move(self, event):
+        if self._selection_start is None or self._selection_rect is None:
+            return
+        self._selection_canvas.coords(
+            self._selection_rect,
+            self._selection_start[0], self._selection_start[1], event.x, event.y,
+        )
+
+    def _selection_mouse_up(self, event):
+        if self._selection_start is None or self._screen_snapshot is None:
+            return
+        start = self._selection_start
+        self._selection_start = None
+        try:
+            image_crop = crop_selection(
+                self._screen_snapshot,
+                start,
+                (event.x, event.y),
+                self._selection_display_size,
+            )
+        except ValueError as exc:
+            logger.info("Screen selection rejected: %s", exc)
+            self._cancel_screen_selection(str(exc))
+            return
+
+        logger.info("Selected screen region with dimensions %s", image_crop.size)
+        self._screen_snapshot = None
+        self._close_selection_overlay()
+        self.show_message("Recognizing selected area…", "#A0AEC0")
+        try:
+            logger.info("Starting OCR worker for selected region")
+            threading.Thread(
+                target=self._screen_ocr_worker,
+                args=(image_crop,),
+                daemon=True,
+            ).start()
         except RuntimeError:
             self._ocr_in_progress = False
-            logger.exception("Could not start screen OCR worker")
+            logger.exception("Could not start OCR worker")
             self.show_message("Could not start OCR. See kahoot_parser.log.", "#EF4444")
 
-    def _screen_ocr_worker(self):
+    def _cancel_screen_selection(self, message="Screen selection cancelled."):
+        logger.info("Screen region selection cancelled")
+        self._screen_snapshot = None
+        self._selection_start = None
+        self._close_selection_overlay()
+        self._ocr_in_progress = False
+        if not self._closing:
+            self.show_message(message, "#D97706")
+
+    def _close_selection_overlay(self):
+        overlay = self._selection_overlay
+        self._selection_overlay = None
+        self._selection_canvas = None
+        self._selection_image = None
+        self._selection_rect = None
+        if overlay is not None:
+            try:
+                overlay.grab_release()
+                overlay.destroy()
+            except TclError:
+                pass
+
+    def _screen_ocr_worker(self, image_crop):
         try:
-            recognized_text = recognize_screen_text()
+            recognized_text = recognize_image_text(image_crop)
             logger.info("Screen OCR completed; recognized %d characters", len(recognized_text))
             self._ocr_results.put((recognized_text, None))
         except Exception as exc:

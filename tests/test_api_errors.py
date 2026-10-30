@@ -536,9 +536,9 @@ class ShutdownTests(unittest.TestCase):
             _capture_pending=threading.Event(), controller=Mock(), after_cancel=Mock(),
             after=Mock(return_value="timer-2"), destroy=Mock(),
             _poll_events=Mock(), _process_clipboard_search=Mock(),
-            _on_capture_hotkey_press=Mock(), _screen_ocr_worker=Mock(),
             _start_screen_ocr=Mock(), _apply_ocr_result=Mock(),
             _ocr_results=queue.Queue(), _ocr_in_progress=False,
+            _selection_overlay=None,
         )
         app.controller.is_busy = False
         return app
@@ -606,8 +606,9 @@ class ClipboardTests(unittest.TestCase):
             _capture_hotkey_handle=None, _capture_pending=threading.Event(),
             _ocr_results=queue.Queue(), _ocr_in_progress=False,
             _on_hotkey_press=Mock(), _on_capture_hotkey_press=Mock(),
-            _screen_ocr_worker=Mock(), show_message=Mock(), search_entry=Mock(),
+            show_message=Mock(), search_entry=Mock(),
             deiconify=Mock(), attributes=Mock(), focus_force=Mock(), _on_search_clicked=Mock(),
+            _open_selection_overlay=Mock(),
         )
 
     def test_hotkey_registration_failure_keeps_manual_search_available(self):
@@ -728,14 +729,16 @@ class ClipboardTests(unittest.TestCase):
         app.search_entry.delete.assert_not_called()
         app.controller.handle_search.assert_not_called()
 
-    def test_f10_starts_ocr_in_background(self):
+    def test_f10_opens_region_selector_without_search(self):
         from gui.app import KahootParserApp
         app = self.fake_app()
-        with patch("gui.app.threading.Thread") as thread:
+        screenshot = Mock()
+        with patch("gui.app.capture_primary_screen", return_value=screenshot) as capture:
             KahootParserApp._start_screen_ocr(app)
         self.assertTrue(app._ocr_in_progress)
-        thread.assert_called_once()
-        thread.return_value.start.assert_called_once()
+        capture.assert_called_once_with()
+        app._open_selection_overlay.assert_called_once_with()
+        self.assertIs(app._screen_snapshot, screenshot)
         app.controller.handle_search.assert_not_called()
 
     def test_copy_failure_never_reports_success_and_can_retry(self):
@@ -812,3 +815,4 @@ class TextFormattingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
