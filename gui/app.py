@@ -1,13 +1,13 @@
 import logging
+import queue
 import threading
 import os
 import sys
-from queue import Empty, Queue
 import keyboard
 import pyperclip
 from tkinter import Misc, TclError, filedialog
 import customtkinter as ctk
-from core.ocr import OCRSetupError, ScreenCaptureError, recognize_screen_text
+from core.ocr import recognize_screen_text
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ class KahootParserApp(ctk.CTk):
         self._closing = False
         self._hotkey_pending = threading.Event()
         self._capture_pending = threading.Event()
-        self._ocr_results = Queue()
+        self._ocr_results = queue.Queue()
         self._ocr_in_progress = False
         self._poll_id = None
         self._hotkey_handle = None
@@ -102,7 +102,7 @@ class KahootParserApp(ctk.CTk):
         self.export_button.grid(row=0, column=2, padx=(0, 15), pady=15)
 
 
-        self.status_label = ctk.CTkLabel(self, text="F9: search clipboard. F10: scan screen text into search.", font=self.font_main, text_color="#A0AEC0")
+        self.status_label = ctk.CTkLabel(self, text="F9: search clipboard. F10: recognize visible screen text.", font=self.font_main, text_color="#A0AEC0")
         self.status_label.grid(row=2, column=0, padx=25, pady=(0, 10), sticky="w")
 
         self.results_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
@@ -116,6 +116,7 @@ class KahootParserApp(ctk.CTk):
     def _register_hotkey(self):
         try:
             self._hotkey_handle = keyboard.add_hotkey('F9', self._on_hotkey_press)
+            logger.info("Registered F9 clipboard-search hotkey")
         except Exception:
             logger.exception("Could not register F9")
             self._hotkey_handle = None
@@ -125,16 +126,24 @@ class KahootParserApp(ctk.CTk):
             self._capture_hotkey_handle = keyboard.add_hotkey(
                 'F10', self._on_capture_hotkey_press
             )
+            logger.info("Registered F10 screen-OCR hotkey")
         except Exception:
             logger.exception("Could not register F10")
             self._capture_hotkey_handle = None
             self.show_message(
-                "F10 screen capture is unavailable. Enter a query manually.",
+                "F10 OCR is unavailable. Enter the question manually.",
                 "#D97706",
             )
 
     def set_controller(self, controller):
         self.controller = controller
+        logger.info("Controller attached to GUI")
+
+    def report_callback_exception(self, exc, value, traceback):
+        logger.error(
+            "Unhandled exception in GUI callback",
+            exc_info=(exc, value, traceback),
+        )
 
     def on_closing(self):
         if self._closing:
@@ -161,12 +170,14 @@ class KahootParserApp(ctk.CTk):
         self._capture_hotkey_handle = None
         self._hotkey_pending.clear()
         self._capture_pending.clear()
-        self._ocr_in_progress = False
         self.destroy()
 
     def _on_hotkey_press(self):
         if not self._closing and self.controller is not None and not self.controller.is_busy:
+            logger.info("F9 hotkey received")
             self._hotkey_pending.set()
+        else:
+            logger.info("Ignored F9 hotkey: app closing, controller missing, or request busy")
 
     def _poll_events(self):
         self._poll_id = None
@@ -177,6 +188,7 @@ class KahootParserApp(ctk.CTk):
                 self.controller.process_pending_results()
             if self._capture_pending.is_set():
                 self._capture_pending.clear()
+                logger.info("F10 event reached GUI event loop")
                 self._start_screen_ocr()
             self._apply_ocr_result()
             if self._hotkey_pending.is_set():
@@ -193,68 +205,71 @@ class KahootParserApp(ctk.CTk):
             and not self.controller.is_busy
             and not self._ocr_in_progress
         ):
+            logger.info("F10 hotkey received")
             self._capture_pending.set()
+        else:
+            logger.info("Ignored F10 hotkey: app closing, controller missing, request busy, or OCR active")
 
     def _start_screen_ocr(self):
+        """Run screen OCR off the GUI thread after F10 is pressed."""
         if (
             self._closing
             or self.controller is None
             or self.controller.is_busy
             or self._ocr_in_progress
         ):
+            logger.info("Skipped OCR start: app closing, controller missing, request busy, or OCR active")
             return
-
         self._ocr_in_progress = True
-        self.show_message("Reading text from the screen...", "#A0AEC0")
+        logger.info("Starting screen OCR worker")
+        self.show_message("Reading visible screen text…", "#A0AEC0")
         try:
-            worker = threading.Thread(target=self._screen_ocr_worker, daemon=True)
-            worker.start()
-        except Exception:
+            threading.Thread(target=self._screen_ocr_worker, daemon=True).start()
+        except RuntimeError:
             self._ocr_in_progress = False
-            logger.exception("Could not start screen OCR")
-            self.show_message("Could not start screen recognition. Please try again.", "#EF4444")
+            logger.exception("Could not start screen OCR worker")
+            self.show_message("Could not start OCR. See kahoot_parser.log.", "#EF4444")
 
     def _screen_ocr_worker(self):
         try:
-            result = (recognize_screen_text(), None)
-        except (OCRSetupError, ScreenCaptureError) as exc:
-            result = (None, str(exc))
-        except Exception:
-            logger.exception("Unexpected error while recognizing screen text")
-            result = (None, "Unexpected error while recognizing screen text.")
-
-        if not self._closing:
-            self._ocr_results.put(result)
+            recognized_text = recognize_screen_text()
+            logger.info("Screen OCR completed; recognized %d characters", len(recognized_text))
+            self._ocr_results.put((recognized_text, None))
+        except Exception as exc:
+            logger.exception("F10 screen OCR failed")
+            self._ocr_results.put((None, str(exc)))
 
     def _apply_ocr_result(self):
         try:
-            text, error = self._ocr_results.get_nowait()
-        except Empty:
+            recognized_text, error = self._ocr_results.get_nowait()
+        except queue.Empty:
             return
 
         self._ocr_in_progress = False
-        if self._closing:
-            return
         if error:
-            self.show_message(error, "#EF4444")
+            logger.error("Screen OCR result failed: %s", error)
+            self.show_message(f"Screen OCR failed: {error}", "#EF4444")
             return
-        if not text or not text.strip():
-            self.show_message("No text was found on the screen. Try again.", "#EF4444")
+        if not recognized_text:
+            logger.warning("Screen OCR completed without readable text")
+            self.show_message("No readable text found on screen.", "#EF4444")
             return
 
-        query = text.strip()
         self.deiconify()
         self.attributes("-topmost", True)
         self.focus_force()
         self.attributes("-topmost", False)
         self.search_entry.delete(0, 'end')
-        self.search_entry.insert(0, query)
+        self.search_entry.insert(0, recognized_text)
         self.search_entry.focus_set()
-        self.show_message("Screen text copied to search. Press Search when ready.", "#10B981")
+        logger.info("Inserted OCR text into search field (%d characters)", len(recognized_text))
+        self.show_message("Screen text recognized. Review it and press Search.", "#10B981")
 
     def _process_clipboard_search(self):
         if self._closing or self.controller is None or self.controller.is_busy:
+            logger.info("Skipped F9 search: app closing, controller missing, or request busy")
             return
+        logger.info("Processing F9 clipboard search")
         try:
             clipboard_text = pyperclip.paste()
         except Exception:
@@ -266,8 +281,11 @@ class KahootParserApp(ctk.CTk):
             return
         query = clipboard_text.strip()
         if not query:
+            logger.info("F9 clipboard did not contain searchable text")
             self.show_message("Clipboard is empty.", "#EF4444")
             return
+
+        logger.info("Starting F9 search with %d characters", len(query))
 
         self.deiconify()
         self.attributes("-topmost", True)
@@ -405,4 +423,5 @@ class KahootParserApp(ctk.CTk):
                     command=lambda a=answer: self.controller.handle_copy(a) if self.controller else None,
                 )
                 button.grid(row=0, column=1, padx=12, pady=12, sticky="n")
+
 
