@@ -11,6 +11,33 @@ from core.ocr import capture_primary_screen, crop_selection, recognize_image_tex
 
 logger = logging.getLogger(__name__)
 
+COLORS = {
+    "background": "#111315",
+    "panel": "#191B1F",
+    "surface": "#1D2024",
+    "input": "#15171A",
+    "border": "#2B2F34",
+    "text": "#E6E8EB",
+    "muted": "#A1A7AF",
+    "button": "#343D49",
+    "button_hover": "#414D5D",
+    "secondary_button": "#2B2F34",
+    "secondary_hover": "#3A3F46",
+    "copy_button": "#254137",
+    "copy_hover": "#315444",
+    "answer_text": "#A8D5C0",
+}
+
+
+def _filter_question_results(questions, query):
+    normalized_query = query.strip().casefold()
+    return [
+        (index, item)
+        for index, item in enumerate(questions)
+        if normalized_query in item["question"].casefold()
+    ]
+
+
 def get_resource_path(relative_path):
     try:
         base_path = sys._MEIPASS
@@ -25,7 +52,7 @@ class KahootParserApp(ctk.CTk):
         self.title("Kahoot Reincarnation Parser")
         self.geometry("950x800")
         self.minsize(600, 400)
-        self.configure(fg_color="#1A1A1A")
+        self.configure(fg_color=COLORS["background"])
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         icon_path = get_resource_path("icon.ico")
@@ -35,7 +62,7 @@ class KahootParserApp(ctk.CTk):
             logger.warning("Could not load window icon %s: %s", icon_path, exc)
 
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(3, weight=1)
+        self.grid_rowconfigure(4, weight=1)
 
         self._closing = False
         self._hotkey_pending = threading.Event()
@@ -62,11 +89,11 @@ class KahootParserApp(ctk.CTk):
         self.font_question = ctk.CTkFont(family="Segoe UI", size=17, weight="bold")
 
 
-        self.header_label = ctk.CTkLabel(self, text="Kahoot Reincarnation Parser", font=self.font_title, text_color="#FFFFFF")
+        self.header_label = ctk.CTkLabel(self, text="Kahoot Reincarnation Parser", font=self.font_title, text_color=COLORS["text"])
         self.header_label.grid(row=0, column=0, padx=20, pady=(30, 10), sticky="w")
 
 
-        self.search_frame = ctk.CTkFrame(self, fg_color="#2A2D34", corner_radius=12)
+        self.search_frame = ctk.CTkFrame(self, fg_color=COLORS["panel"], corner_radius=12)
         self.search_frame.grid(row=1, column=0, padx=20, pady=(0, 20), sticky="ew")
         self.search_frame.grid_columnconfigure(0, weight=1)
 
@@ -77,8 +104,8 @@ class KahootParserApp(ctk.CTk):
             height=45,
             corner_radius=8,
             border_width=1,
-            border_color="#3E424B",
-            fg_color="#1E1F24"
+            border_color=COLORS["border"],
+            fg_color=COLORS["input"]
         )
         self.search_entry.grid(row=0, column=0, padx=(15, 10), pady=15, sticky="ew")
         self.search_entry.bind("<Return>", lambda event: self._on_search_clicked())
@@ -89,8 +116,8 @@ class KahootParserApp(ctk.CTk):
             font=self.font_bold, 
             height=45,
             corner_radius=8,
-            fg_color="#3B82F6", 
-            hover_color="#2563EB",
+            fg_color=COLORS["button"],
+            hover_color=COLORS["button_hover"],
             command=self._on_search_clicked
         )
         self.search_button.grid(row=0, column=1, padx=(0, 10), pady=15)
@@ -101,21 +128,57 @@ class KahootParserApp(ctk.CTk):
             font=self.font_bold, 
             height=45,
             corner_radius=8,
-            fg_color="#D97706", 
-            hover_color="#B45309", 
+            fg_color=COLORS["secondary_button"],
+            hover_color=COLORS["secondary_hover"],
             state="disabled", 
             command=self._on_export_clicked
         )
         self.export_button.grid(row=0, column=2, padx=(0, 15), pady=15)
 
 
-        self.status_label = ctk.CTkLabel(self, text="F9: search clipboard. F10: select a screen region for OCR.", font=self.font_main, text_color="#A0AEC0")
+        self.status_label = ctk.CTkLabel(self, text="F9: search clipboard. F10: select a screen region for OCR.", font=self.font_main, text_color=COLORS["muted"])
         self.status_label.grid(row=2, column=0, padx=25, pady=(0, 10), sticky="w")
 
-        self.results_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        self.results_frame.grid(row=3, column=0, padx=20, pady=(0, 20), sticky="nsew")
+        self.results_frame = ctk.CTkFrame(self, fg_color=COLORS["background"], corner_radius=0)
+        self.results_frame.grid(row=4, column=0, padx=20, pady=(0, 20), sticky="nsew")
         self.results_frame.grid_columnconfigure(0, weight=1)
+        self.results_frame.grid_rowconfigure(0, weight=1)
 
+        self._result_mode = None
+        self._result_data = []
+        self._question_cards = []
+        self._no_questions_label = None
+        self.question_search_frame = ctk.CTkFrame(
+            self, fg_color=COLORS["background"], corner_radius=0
+        )
+        self.question_search_frame.grid(row=3, column=0, padx=20, pady=(0, 8), sticky="ew")
+        self.question_search_frame.grid_columnconfigure(0, weight=1)
+        self.question_search_entry = ctk.CTkEntry(
+            self.question_search_frame,
+            placeholder_text="Find in quiz questions... (Ctrl+F)",
+            font=self.font_main,
+            height=38,
+            corner_radius=8,
+            border_width=1,
+            border_color=COLORS["border"],
+            fg_color=COLORS["input"],
+        )
+        self.question_search_entry.grid(row=0, column=0, sticky="ew")
+        self.question_search_entry.bind(
+            "<KeyRelease>", self._on_question_search_changed
+        )
+        self.question_search_entry.bind("<Escape>", self._clear_question_search)
+        self.question_search_frame.grid_remove()
+
+        self.results_content = ctk.CTkScrollableFrame(
+            self.results_frame,
+            fg_color=COLORS["background"],
+            corner_radius=0,
+        )
+        self.results_content.grid(row=0, column=0, sticky="nsew")
+        self.results_content.grid_columnconfigure(0, weight=1)
+        self.bind("<Control-f>", self._focus_question_search)
+        self.bind("<Control-F>", self._focus_question_search)
 
         self._register_hotkey()
         self._poll_id = self.after(50, self._poll_events)
@@ -428,46 +491,220 @@ class KahootParserApp(ctk.CTk):
             self.controller.handle_export(file_path)
 
     def clear_results(self):
-        for widget in self.result_widgets:
+        for widget in self.results_content.winfo_children():
             widget.destroy()
         self.result_widgets.clear()
+        self._result_mode = None
+        self._result_data = []
+        self._question_cards.clear()
+        self._no_questions_label = None
+        self.question_search_entry.delete(0, "end")
+        self.question_search_frame.grid_remove()
         self.export_button.configure(state="disabled")
 
     def show_loading(self, message):
         self.clear_results()
-        self.status_label.configure(text=message, text_color="#FFFFFF")
+        self.status_label.configure(text=message, text_color=COLORS["text"])
         self.search_button.configure(state="disabled")
         self.search_entry.configure(state="disabled")
 
     def show_message(self, message, color):
-        self.status_label.configure(text=message, text_color=color)
+        muted_status_colors = {
+            "#EF4444": "#D98C8C",
+            "#D97706": "#C99D68",
+            "#10B981": "#8BC9A9",
+            "#FFFFFF": COLORS["text"],
+            "#A0AEC0": COLORS["muted"],
+        }
+        self.status_label.configure(text=message, text_color=muted_status_colors.get(color, color))
         state = "disabled" if self.controller and self.controller.is_busy else "normal"
         self.search_button.configure(state=state)
         self.search_entry.configure(state=state)
 
     def display_search_results(self, quizzes):
         self.search_button.configure(state="normal")
-        
         if not quizzes:
+            self.clear_results()
             self.show_message("No public quizzes found for this query.", "#EF4444")
             return
 
+        self.clear_results()
+        self._result_mode = "search"
+        self._result_data = quizzes
         self.show_message(f"Found {len(quizzes)} quizzes. Select one to extract answers.", "#10B981")
+        self._render_result_page()
 
-        for index, quiz in enumerate(quizzes):
-            card = ctk.CTkFrame(self.results_frame, fg_color="#2A2D34", corner_radius=12)
-            card.grid(row=index, column=0, padx=5, pady=5, sticky="ew")
-            card.grid_columnconfigure(0, weight=1)
-            self.result_widgets.append(card)
-            label = self._wrapped_label(card, quiz["title"], self.font_bold)
-            label.grid(row=0, column=0, padx=15, pady=(12, 4), sticky="ew")
-            identifier = self._wrapped_label(card, f"UUID: {quiz['uuid']}", self.font_main, "#A0AEC0")
-            identifier.grid(row=1, column=0, padx=15, pady=(0, 12), sticky="ew")
-            button = ctk.CTkButton(
-                card, text="Open", width=80,
-                command=lambda u=quiz["uuid"]: self.controller.handle_fetch(u) if self.controller else None,
+    def _focus_question_search(self, _event=None):
+        if self._result_mode != "answers" or self._closing:
+            return
+        self.question_search_entry.focus_set()
+        self.question_search_entry.select_range(0, "end")
+        return "break"
+
+    def _on_question_search_changed(self, _event=None):
+        if self._result_mode == "answers":
+            self._filter_visible_question_cards()
+
+    def _clear_question_search(self, _event=None):
+        if self.question_search_entry.get():
+            self.question_search_entry.delete(0, "end")
+        self._filter_visible_question_cards()
+        return "break"
+
+    def _render_result_page(self):
+        for widget in self.results_content.winfo_children():
+            widget.destroy()
+        self.result_widgets.clear()
+        self._question_cards.clear()
+        self._no_questions_label = None
+        if not self._result_data:
+            return
+
+        if self._result_mode == "answers":
+            self.question_search_frame.grid()
+            for index, item in enumerate(self._result_data):
+                card = ctk.CTkFrame(
+                    self.results_content, fg_color=COLORS["panel"], corner_radius=12
+                )
+                card.grid(row=index, column=0, padx=5, pady=8, sticky="ew")
+                card.grid_columnconfigure(0, weight=1)
+                self.result_widgets.append(card)
+                self._question_cards.append((index, item["question"], card))
+                self._render_question_card(card, item, index)
+            self._no_questions_label = ctk.CTkLabel(
+                self.results_content,
+                text="No questions match your search.",
+                font=self.font_main,
+                text_color=COLORS["muted"],
             )
-            button.grid(row=0, column=1, rowspan=2, padx=15, pady=12)
+            self._no_questions_label.grid_remove()
+            self._filter_visible_question_cards()
+        else:
+            self.question_search_frame.grid_remove()
+            for row, quiz in enumerate(self._result_data):
+                card = ctk.CTkFrame(
+                    self.results_content, fg_color=COLORS["panel"], corner_radius=12
+                )
+                card.grid(row=row, column=0, padx=5, pady=8, sticky="ew")
+                card.grid_columnconfigure(0, weight=1)
+                self.result_widgets.append(card)
+                self._render_quiz_card(card, quiz)
+
+    def _filter_visible_question_cards(self):
+        matches = {
+            index
+            for index, _item in _filter_question_results(
+                self._result_data, self.question_search_entry.get()
+            )
+        }
+        visible_row = 0
+        for index, _question, card in self._question_cards:
+            if index in matches:
+                card.grid_configure(row=visible_row)
+                visible_row += 1
+            else:
+                card.grid_remove()
+
+        if self._no_questions_label is not None:
+            if visible_row:
+                self._no_questions_label.grid_remove()
+            else:
+                self._no_questions_label.grid(row=0, column=0, pady=24)
+        self.results_content._parent_canvas.yview_moveto(0)
+
+    def _render_quiz_card(self, card, quiz):
+        title = self._wrapped_label(card, quiz["title"], self.font_bold, COLORS["text"])
+        title.grid(row=0, column=0, padx=20, pady=(24, 8), sticky="ew")
+        identifier = self._wrapped_label(
+            card, f"UUID: {quiz['uuid']}", self.font_main, COLORS["muted"]
+        )
+        identifier.grid(row=1, column=0, padx=20, pady=(0, 20), sticky="ew")
+        button = ctk.CTkButton(
+            card,
+            text="Open quiz",
+            width=110,
+            fg_color=COLORS["button"],
+            hover_color=COLORS["button_hover"],
+            command=lambda u=quiz["uuid"]: self.controller.handle_fetch(u) if self.controller else None,
+        )
+        button.grid(row=0, column=1, rowspan=2, padx=20, pady=20)
+
+    def _render_question_card(self, card, item, index):
+        question = self._wrapped_label(
+            card,
+            f"{index + 1}. [{item.get('type', 'unknown')}] {item['question']}",
+            self.font_question,
+            COLORS["text"],
+        )
+        question.grid(row=0, column=0, padx=20, pady=(22, 10), sticky="ew")
+
+        next_row = 1
+        details = "\n".join(filter(None, (item.get("message"), item.get("warning"))))
+        if details:
+            details_label = self._wrapped_label(
+                card,
+                details,
+                self.font_main,
+                "#C99D68" if item.get("warning") else COLORS["muted"],
+            )
+            details_label.grid(row=next_row, column=0, padx=20, pady=6, sticky="ew")
+            next_row += 1
+
+        if not item["answers"]:
+            empty_text = {
+                "content": "Content slide",
+                "no_answer_required": "No correct answer required",
+                "unsupported": "Unsupported format",
+                "invalid_data": "Answers unavailable",
+                "no_correct_answer": "No correct answer specified",
+            }.get(item.get("status"), "Answers unavailable")
+            empty_label = self._wrapped_label(card, empty_text, self.font_main, COLORS["muted"])
+            empty_label.grid(row=next_row, column=0, padx=20, pady=(12, 22), sticky="ew")
+            return
+
+        for answer_index, answer in enumerate(item["answers"]):
+            answer_row = ctk.CTkFrame(card, fg_color=COLORS["surface"], corner_radius=8)
+            answer_row.grid(
+                row=next_row + answer_index,
+                column=0,
+                padx=20,
+                pady=(5, 7),
+                sticky="ew",
+            )
+            answer_row.grid_columnconfigure(0, weight=1)
+            label = self._wrapped_label(
+                answer_row, answer, self.font_bold, COLORS["answer_text"]
+            )
+            label.grid(row=0, column=0, padx=12, pady=12, sticky="ew")
+            button = ctk.CTkButton(
+                answer_row,
+                text="Copy",
+                width=75,
+                fg_color=COLORS["copy_button"],
+                hover_color=COLORS["copy_hover"],
+                command=lambda value=answer: self.controller.handle_copy(value) if self.controller else None,
+            )
+            button.grid(row=0, column=1, padx=12, pady=12, sticky="n")
+
+    def display_quiz_answers(self, answers_data):
+        self.search_button.configure(state="normal")
+        if not answers_data:
+            self.clear_results()
+            self.show_message("No questions were returned for this quiz.", "#EF4444")
+            return
+
+        self.clear_results()
+        self.export_button.configure(state="normal")
+        self._result_mode = "answers"
+        self._result_data = answers_data
+        warning_count = sum(bool(item.get("warning")) for item in answers_data)
+        unsupported_count = sum(item.get("status") == "unsupported" for item in answers_data)
+        self.show_message(
+            f"Loaded {len(answers_data)} items. "
+            f"Unsupported: {unsupported_count}. Data warnings: {warning_count}.",
+            "#D97706" if warning_count or unsupported_count else "#10B981",
+        )
+        self._render_result_page()
 
     def _wrapped_label(self, parent, text, font, color="#FFFFFF"):
         label = ctk.CTkLabel(
@@ -484,62 +721,3 @@ class KahootParserApp(ctk.CTk):
                 label.configure(wraplength=width)
         Misc.bind(label, "<Configure>", resize, add="+")
         return label
-
-    def display_quiz_answers(self, answers_data):
-        self.search_button.configure(state="normal")
-        
-        if not answers_data:
-            self.show_message("No questions were returned for this quiz.", "#EF4444")
-            return
-
-        self.export_button.configure(state="normal")
-        warning_count = sum(bool(item.get("warning")) for item in answers_data)
-        unsupported_count = sum(item.get("status") == "unsupported" for item in answers_data)
-        self.show_message(
-            f"Loaded {len(answers_data)} items. "
-            f"Unsupported: {unsupported_count}. Data warnings: {warning_count}.",
-            "#D97706" if warning_count or unsupported_count else "#10B981",
-        )
-
-        for index, item in enumerate(answers_data):
-            card = ctk.CTkFrame(self.results_frame, fg_color="#2A2D34", corner_radius=12)
-            card.grid(row=index, column=0, padx=5, pady=10, sticky="ew")
-            card.grid_columnconfigure(0, weight=1)
-            self.result_widgets.append(card)
-
-            q_label = self._wrapped_label(
-                card, f"{index + 1}. [{item.get('type', 'unknown')}] {item['question']}",
-                self.font_question,
-            )
-            q_label.grid(row=0, column=0, padx=20, pady=(20, 5), sticky="ew")
-
-            details = "\n".join(filter(None, (item.get("message"), item.get("warning"))))
-            if details:
-                warning_label = self._wrapped_label(
-                    card, details, self.font_main,
-                    "#FBBF24" if item.get("warning") else "#A0AEC0",
-                )
-                warning_label.grid(row=1, column=0, padx=20, pady=5, sticky="ew")
-
-            if not item["answers"]:
-                empty_text = {
-                    "content": "Content slide", "no_answer_required": "No correct answer required",
-                    "unsupported": "Unsupported format", "invalid_data": "Answers unavailable",
-                    "no_correct_answer": "No correct answer specified",
-                }.get(item.get("status"), "Answers unavailable")
-                label = self._wrapped_label(card, empty_text, self.font_main, "#A0AEC0")
-                label.grid(row=2, column=0, padx=20, pady=(10, 20), sticky="ew")
-
-            for answer_index, answer in enumerate(item["answers"]):
-                row = ctk.CTkFrame(card, fg_color="#1E1F24", corner_radius=8)
-                row.grid(row=answer_index + 2, column=0, padx=20, pady=(5, 10), sticky="ew")
-                row.grid_columnconfigure(0, weight=1)
-                label = self._wrapped_label(row, answer, self.font_bold, "#6EE7B7")
-                label.grid(row=0, column=0, padx=12, pady=12, sticky="ew")
-                button = ctk.CTkButton(
-                    row, text="Copy", width=75, fg_color="#10B981", hover_color="#059669",
-                    command=lambda a=answer: self.controller.handle_copy(a) if self.controller else None,
-                )
-                button.grid(row=0, column=1, padx=12, pady=12, sticky="n")
-
-
