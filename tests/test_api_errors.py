@@ -812,7 +812,5 @@ class TextFormattingTests(unittest.TestCase):
         resize(SimpleNamespace(width=300))
         label.configure.assert_called_with(wraplength=196)
 
-
 if __name__ == "__main__":
     unittest.main()
-
